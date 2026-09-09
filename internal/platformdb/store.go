@@ -27,17 +27,29 @@ var (
 	ErrDatabaseClosed          = errors.New("platformdb: database is closed")
 	ErrFutureSchema            = errors.New("platformdb: database schema is newer than this binary")
 	ErrUnknownMigration        = errors.New("platformdb: database contains an unknown migration")
+	ErrMissingMigration        = errors.New("platformdb: database migration history is incomplete")
+	ErrMigrationHistory        = errors.New("platformdb: database migration history is missing")
 	ErrMigrationChecksum       = errors.New("platformdb: migration checksum mismatch")
+	ErrPreMigrationBackup      = errors.New("platformdb: pre-migration backup failed")
 	ErrBackupDestinationExists = errors.New("platformdb: backup destination already exists")
 	ErrBackupSameDatabase      = errors.New("platformdb: backup destination is the source database")
 )
 
+// PreMigrationBackupConfig controls the destination of the automatic backup
+// taken before an existing database receives pending migrations. An empty
+// destination uses the deterministic default derived from the source path,
+// schema versions and Config.Now.
+type PreMigrationBackupConfig struct {
+	Destination string
+}
+
 // Config controls one explicit SQLite owner. MaxOpenConns is intentionally not
 // configurable: every connection-level PRAGMA must apply to the sole owner.
 type Config struct {
-	Path        string
-	BusyTimeout time.Duration
-	Now         func() time.Time
+	Path               string
+	BusyTimeout        time.Duration
+	Now                func() time.Time
+	PreMigrationBackup PreMigrationBackupConfig
 }
 
 func (c Config) normalized() (Config, error) {
@@ -58,10 +70,13 @@ func (c Config) normalized() (Config, error) {
 // *sql.DB is kept private so future services cannot accidentally open a second
 // independent writer.
 type Store struct {
-	db          *sql.DB
-	path        string
-	busyTimeout time.Duration
-	now         func() time.Time
+	db                     *sql.DB
+	path                   string
+	databaseExisted        bool
+	busyTimeout            time.Duration
+	now                    func() time.Time
+	preMigrationBackup     PreMigrationBackupConfig
+	lastPreMigrationBackup string
 }
 
 // Open creates the parent directory when needed, opens SQLite, configures the
@@ -79,6 +94,15 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 		return nil, err
 	}
 
+	databaseExisted := false
+	if !isMemoryPath(normalized.Path) && !strings.HasPrefix(normalized.Path, "file:") {
+		if _, statErr := os.Stat(normalized.Path); statErr == nil {
+			databaseExisted = true
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return nil, fmt.Errorf("platformdb: inspect database path: %w", statErr)
+		}
+	}
+
 	db, err := sql.Open("sqlite", sqliteDSN(normalized.Path, normalized.BusyTimeout))
 	if err != nil {
 		return nil, fmt.Errorf("platformdb: open sqlite: %w", err)
@@ -90,10 +114,12 @@ func Open(ctx context.Context, cfg Config) (*Store, error) {
 	db.SetMaxIdleConns(1)
 
 	store := &Store{
-		db:          db,
-		path:        normalized.Path,
-		busyTimeout: normalized.BusyTimeout,
-		now:         normalized.Now,
+		db:                 db,
+		path:               normalized.Path,
+		databaseExisted:    databaseExisted,
+		busyTimeout:        normalized.BusyTimeout,
+		now:                normalized.Now,
+		preMigrationBackup: normalized.PreMigrationBackup,
 	}
 	closeOnError := true
 	defer func() {
@@ -165,22 +191,157 @@ func (s *Store) configure(ctx context.Context) error {
 	return nil
 }
 
-// Migrate applies missing migrations atomically and records a checksum for
-// every applied version. A changed migration cannot silently mutate an
-// existing installation.
+type appliedMigration struct {
+	version  int
+	name     string
+	checksum string
+}
+
+type migrationInspection struct {
+	definitions []migrationDefinition
+	applied     map[int]appliedMigration
+	current     int
+	pending     []migrationDefinition
+	brandNew    bool
+}
+
+// Migrate inspects migration history without mutating the database, takes a
+// pre-migration backup when an existing database has pending work, and only
+// then applies the pending SQL in one transaction. The separation is
+// deliberate: backup failure must leave both the schema and history untouched.
 func (s *Store) Migrate(ctx context.Context) error {
 	if s == nil || s.db == nil {
 		return ErrDatabaseClosed
 	}
-	definitions, err := migrationDefinitions()
+	inspection, err := s.inspectMigrations(ctx)
 	if err != nil {
 		return err
 	}
+	if len(inspection.pending) > 0 && !inspection.brandNew {
+		destination, err := s.preMigrationBackupDestination(inspection)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrPreMigrationBackup, err)
+		}
+		if err := s.Backup(ctx, destination); err != nil {
+			return fmt.Errorf("%w: %v", ErrPreMigrationBackup, err)
+		}
+		s.lastPreMigrationBackup = destination
+	}
+	return s.applyMigrations(ctx, inspection)
+}
+
+func (s *Store) inspectMigrations(ctx context.Context) (migrationInspection, error) {
+	definitions, err := migrationDefinitions()
+	if err != nil {
+		return migrationInspection{}, err
+	}
+	inspection := migrationInspection{
+		definitions: definitions,
+		applied:     make(map[int]appliedMigration),
+	}
+
+	var tableExists int
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations')").Scan(&tableExists); err != nil {
+		return migrationInspection{}, fmt.Errorf("platformdb: inspect schema_migrations: %w", err)
+	}
+	if tableExists == 0 {
+		var objectCount int
+		if err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM sqlite_master
+WHERE name NOT LIKE 'sqlite_%'
+  AND type IN ('table', 'index', 'view', 'trigger')`).Scan(&objectCount); err != nil {
+			return migrationInspection{}, fmt.Errorf("platformdb: inspect database objects: %w", err)
+		}
+		if objectCount != 0 {
+			return migrationInspection{}, ErrMigrationHistory
+		}
+		inspection.brandNew = true
+		inspection.pending = append([]migrationDefinition(nil), definitions...)
+		return inspection, nil
+	}
+
+	rows, err := s.db.QueryContext(ctx, "SELECT version, name, checksum FROM schema_migrations ORDER BY version")
+	if err != nil {
+		return migrationInspection{}, fmt.Errorf("platformdb: read schema_migrations: %w", err)
+	}
+	for rows.Next() {
+		var migration appliedMigration
+		if err := rows.Scan(&migration.version, &migration.name, &migration.checksum); err != nil {
+			_ = rows.Close()
+			return migrationInspection{}, fmt.Errorf("platformdb: scan schema_migrations: %w", err)
+		}
+		if _, exists := inspection.applied[migration.version]; exists {
+			_ = rows.Close()
+			return migrationInspection{}, fmt.Errorf("%w: duplicate version %d", ErrMigrationHistory, migration.version)
+		}
+		inspection.applied[migration.version] = migration
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return migrationInspection{}, fmt.Errorf("platformdb: read schema_migrations: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return migrationInspection{}, fmt.Errorf("platformdb: close schema_migrations: %w", err)
+	}
+
 	known := make(map[int]migrationDefinition, len(definitions))
 	for _, definition := range definitions {
 		known[definition.version] = definition
 	}
-	latestVersion := definitions[len(definitions)-1].version
+	for _, existing := range inspection.applied {
+		if existing.version > definitions[len(definitions)-1].version {
+			return migrationInspection{}, fmt.Errorf("%w: version %d", ErrFutureSchema, existing.version)
+		}
+		definition, ok := known[existing.version]
+		if !ok {
+			return migrationInspection{}, fmt.Errorf("%w: version %d", ErrUnknownMigration, existing.version)
+		}
+		if existing.name != definition.name || existing.checksum != definition.checksum {
+			return migrationInspection{}, fmt.Errorf("%w: version %d", ErrMigrationChecksum, existing.version)
+		}
+	}
+
+	maxApplied := 0
+	for version := range inspection.applied {
+		if version > maxApplied {
+			maxApplied = version
+		}
+	}
+	for version := 1; version <= maxApplied; version++ {
+		if _, ok := inspection.applied[version]; !ok {
+			return migrationInspection{}, fmt.Errorf("%w: missing version %d", ErrMissingMigration, version)
+		}
+	}
+	inspection.current = maxApplied
+	for _, definition := range definitions {
+		if _, ok := inspection.applied[definition.version]; !ok {
+			inspection.pending = append(inspection.pending, definition)
+		}
+	}
+	return inspection, nil
+}
+
+func (s *Store) preMigrationBackupDestination(inspection migrationInspection) (string, error) {
+	if configured := strings.TrimSpace(s.preMigrationBackup.Destination); configured != "" {
+		if sameDatabasePath(s.path, configured) {
+			return "", ErrBackupSameDatabase
+		}
+		return configured, nil
+	}
+	if isMemoryPath(s.path) || strings.HasPrefix(s.path, "file:") {
+		return "", ErrInvalidPath
+	}
+	latest := inspection.definitions[len(inspection.definitions)-1].version
+	stamp := s.now().UTC().Format("20060102T150405.000000000Z")
+	return fmt.Sprintf("%s.pre-migration-v%d-to-v%d-%s.sqlite", s.path, inspection.current, latest, stamp), nil
+}
+
+func (s *Store) applyMigrations(ctx context.Context, inspection migrationInspection) error {
+	if len(inspection.pending) == 0 {
+		return nil
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -203,49 +364,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		return fmt.Errorf("platformdb: create schema_migrations: %w", err)
 	}
 
-	type appliedMigration struct {
-		version  int
-		name     string
-		checksum string
-	}
-	rows, err := tx.QueryContext(ctx, "SELECT version, name, checksum FROM schema_migrations ORDER BY version")
-	if err != nil {
-		return fmt.Errorf("platformdb: read schema_migrations: %w", err)
-	}
-	applied := make(map[int]appliedMigration)
-	for rows.Next() {
-		var migration appliedMigration
-		if err := rows.Scan(&migration.version, &migration.name, &migration.checksum); err != nil {
-			_ = rows.Close()
-			return fmt.Errorf("platformdb: scan schema_migrations: %w", err)
-		}
-		applied[migration.version] = migration
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
-		return fmt.Errorf("platformdb: read schema_migrations: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("platformdb: close schema_migrations: %w", err)
-	}
-
-	for _, existing := range applied {
-		if existing.version > latestVersion {
-			return fmt.Errorf("%w: version %d", ErrFutureSchema, existing.version)
-		}
-		definition, ok := known[existing.version]
-		if !ok {
-			return fmt.Errorf("%w: version %d", ErrUnknownMigration, existing.version)
-		}
-		if existing.name != definition.name || existing.checksum != definition.checksum {
-			return fmt.Errorf("%w: version %d", ErrMigrationChecksum, existing.version)
-		}
-	}
-
-	for _, definition := range definitions {
-		if _, ok := applied[definition.version]; ok {
-			continue
-		}
+	for _, definition := range inspection.pending {
 		if _, err := tx.ExecContext(ctx, definition.sql); err != nil {
 			return fmt.Errorf("platformdb: apply migration %d (%s): %w", definition.version, definition.name, err)
 		}
@@ -265,6 +384,16 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 	}
 	committed = true
 	return nil
+}
+
+// LastPreMigrationBackupPath reports the backup path created by the most
+// recent successful migration gate. It is intentionally read-only and empty
+// when the store opened without pending migrations.
+func (s *Store) LastPreMigrationBackupPath() string {
+	if s == nil {
+		return ""
+	}
+	return s.lastPreMigrationBackup
 }
 
 // SchemaVersion returns the highest successfully recorded migration version.

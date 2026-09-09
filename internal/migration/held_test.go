@@ -30,6 +30,9 @@ func TestHeldDeliverySurvivesSerializationAndReleasesOnlyForItsMigration(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	if held.RouteDecisionID != "route-1" {
+		t.Fatalf("route decision id = %q", held.RouteDecisionID)
+	}
 	encoded, err := json.Marshal(held)
 	if err != nil {
 		t.Fatal(err)
@@ -41,6 +44,9 @@ func TestHeldDeliverySurvivesSerializationAndReleasesOnlyForItsMigration(t *test
 	if err := json.Unmarshal(encoded, &afterRestart); err != nil {
 		t.Fatal(err)
 	}
+	if afterRestart.RouteDecisionID != "route-1" {
+		t.Fatalf("recovered route decision id = %q", afterRestart.RouteDecisionID)
+	}
 
 	released, err := afterRestart.Release("migration-1", json.RawMessage(`{"connector_id":"onebot-new","target_id":"group-1"}`))
 	if err != nil || released.DeliveryID != "delivery-1" ||
@@ -51,5 +57,38 @@ func TestHeldDeliverySurvivesSerializationAndReleasesOnlyForItsMigration(t *test
 	}
 	if _, err := afterRestart.Release("migration-other", nil); !errors.Is(err, ErrMigrationMismatch) {
 		t.Fatalf("wrong migration error = %v", err)
+	}
+}
+
+func TestHeldDeliveryBackfillsOnlyTheDurablePayloadRouteIdentity(t *testing.T) {
+	held, err := NewHeldDelivery(heldPayload())
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(held)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy map[string]any
+	if err := json.Unmarshal(encoded, &legacy); err != nil {
+		t.Fatal(err)
+	}
+	delete(legacy, "route_decision_id")
+	legacyBytes, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recovered HeldDelivery
+	if err := json.Unmarshal(legacyBytes, &recovered); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := recovered.Decode()
+	if err != nil || payload.RouteID != "route-1" {
+		t.Fatalf("legacy recovery = %#v, %v", payload, err)
+	}
+
+	recovered.RouteDecisionID = "wrong-route"
+	if _, err := recovered.Decode(); !errors.Is(err, ErrInvalidHeldDelivery) {
+		t.Fatalf("route identity mismatch error = %v", err)
 	}
 }

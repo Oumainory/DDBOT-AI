@@ -15,8 +15,28 @@ func TestFingerprintNormalizesPathAndJSONBody(t *testing.T) {
 	if !first.Equal(second) {
 		t.Fatalf("equivalent requests produced different fingerprints: %#v vs %#v", first, second)
 	}
+	if first.CanonicalQuery != "a=1&b=2" {
+		t.Fatalf("canonical query = %q, want a=1&b=2", first.CanonicalQuery)
+	}
+	if got, err := CanonicalQuery("/api/v2/targets/target_a/?b=2&a=1"); err != nil || got != "a=1&b=2" {
+		t.Fatalf("CanonicalQuery() = %q, %v", got, err)
+	}
 	if NormalizePathMust("/api/v2/targets/target_a/?b=2&a=1") != "/api/v2/targets/target_a?a=1&b=2" {
 		t.Fatal("path was not normalized as expected")
+	}
+}
+
+func TestFingerprintQuerySemanticsArePartOfIdentity(t *testing.T) {
+	base, err := NewFingerprint("POST", "/api/v2/events/replay?event_id=one", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	differentQuery, err := NewFingerprint("POST", "/api/v2/events/replay?event_id=two", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.Equal(differentQuery) || Compare(base, differentQuery) != ConflictingRequest {
+		t.Fatal("different canonical queries were treated as the same request")
 	}
 }
 

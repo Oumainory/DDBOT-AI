@@ -1,6 +1,6 @@
 # DDBOT-AI Phase 1 — Platform Foundation
 
-状态：**范围已冻结，实施尚未开始**。
+状态：**范围已冻结；P1A SQLite Foundation 正在实施，P1A.1 契约收口已完成**。
 
 Phase 1 以 `phase0-baseline`（`2030834d423e8313df4ae7a937aec0f0badbd443`）为稳定锚点，建立 DDBOT-AI 的安全、存储、API 和 Dashboard 基础。Phase 1 不改变 Legacy WSa 的采集、过滤、模板或 OneBot 投递语义；所有新基础设施都必须遵守 [V1 不变量](../architecture/V1_INVARIANTS.md) 和 Phase 0 兼容性门禁。
 

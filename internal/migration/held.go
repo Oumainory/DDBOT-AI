@@ -18,10 +18,11 @@ var (
 )
 
 type HeldDelivery struct {
-	DeliveryID  string                `json:"delivery_id"`
-	MigrationID string                `json:"migration_id"`
-	PayloadJSON []byte                `json:"payload_json"`
-	Status      domain.DeliveryStatus `json:"status"`
+	DeliveryID      string                `json:"delivery_id"`
+	MigrationID     string                `json:"migration_id"`
+	RouteDecisionID string                `json:"route_decision_id,omitempty"`
+	PayloadJSON     []byte                `json:"payload_json"`
+	Status          domain.DeliveryStatus `json:"status"`
 }
 
 func NewHeldDelivery(payload deliverysnapshot.Payload) (HeldDelivery, error) {
@@ -30,10 +31,11 @@ func NewHeldDelivery(payload deliverysnapshot.Payload) (HeldDelivery, error) {
 		return HeldDelivery{}, err
 	}
 	return HeldDelivery{
-		DeliveryID:  payload.DeliveryID,
-		MigrationID: payload.MigrationID,
-		PayloadJSON: data,
-		Status:      domain.DeliveryMigrationHeld,
+		DeliveryID:      payload.DeliveryID,
+		MigrationID:     payload.MigrationID,
+		RouteDecisionID: payload.RouteID,
+		PayloadJSON:     data,
+		Status:          domain.DeliveryMigrationHeld,
 	}, nil
 }
 
@@ -49,6 +51,15 @@ func (h HeldDelivery) Decode() (deliverysnapshot.Payload, error) {
 		return deliverysnapshot.Payload{}, err
 	}
 	if payload.DeliveryID != h.DeliveryID || payload.MigrationID != h.MigrationID {
+		return deliverysnapshot.Payload{}, ErrInvalidHeldDelivery
+	}
+	// Rows serialized before route_decision_id was promoted to an independent
+	// column can safely derive it from the durable payload identity. We never
+	// invent a value: the payload validator already requires RouteID.
+	if strings.TrimSpace(h.RouteDecisionID) == "" {
+		h.RouteDecisionID = payload.RouteID
+	}
+	if h.RouteDecisionID != payload.RouteID {
 		return deliverysnapshot.Payload{}, ErrInvalidHeldDelivery
 	}
 	return payload, nil

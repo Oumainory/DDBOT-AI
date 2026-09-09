@@ -24,7 +24,9 @@ PRAGMA busy_timeout = 5000;
 
 ## Migration 与版本表
 
-内置 migration 通过 `go:embed` 随二进制发布，不依赖当前工作目录。`schema_migrations` 保存：
+内置 migration 通过 `go:embed` 随二进制发布，不依赖当前工作目录。运行时按文件名
+`NNN_name.sql` 解析并按数字版本排序；版本必须从 1 连续、唯一，每个文件都有独立的
+`sha256:<embedded SQL>` checksum。`schema_migrations` 保存：
 
 ```text
 version
@@ -33,11 +35,61 @@ checksum = sha256:<embedded SQL>
 applied_at
 ```
 
-每个 migration 在事务内执行。已经应用的版本必须同时匹配 name 和 checksum；修改已发布 SQL、未知版本或高于当前二进制的版本都会拒绝启动，避免静默降级或重写既有数据。当前 P1A migration 版本为 `1/core`，包含 Phase 0 已冻结的幂等记录表和 `migration_held` durable hold 表。
+每个 migration 在一个事务内执行。已经应用的版本必须同时匹配 name 和 checksum；修改已发布 SQL、未知版本、缺失历史或高于当前二进制的版本都会在任何 schema mutation 前拒绝启动，避免静默降级或重写既有数据。
+
+`001_core.sql` 已发布且 immutable，不能被重写或重新计算 checksum。P1A.1 新增
+`002_contracts.sql`，因此 fresh database 按 `1 → 2` 创建 latest schema，已有 v1
+database 按同一顺序升级。
+
+## Pre-migration backup gate
+
+打开已有 database 时，owner 严格执行下面的顺序：
+
+```text
+open/configure SQLite
+    ↓
+read-only inspect schema_migrations and validate every applied checksum
+    ↓
+if existing database has pending migration: create a non-overwriting VACUUM INTO backup
+    ↓
+confirm backup succeeded
+    ↓
+apply only pending migrations in one transaction
+    ↓
+return Store
+```
+
+fresh empty database 不需要无意义的备份；已经是 latest schema 的 database 也不备份。
+备份目标可以由 `Config.PreMigrationBackup.Destination` 明确指定；为空时由 source path、
+版本和 `Config.Now` 生成稳定的、可审计的默认文件名。目标已存在、目标等于 source、
+目标不可创建或 `VACUUM INTO` 失败，都会返回 `ErrPreMigrationBackup`，且不会执行任何
+pending migration。备份失败时 live schema、原始数据和 `schema_migrations` 都保持不变。
+
+成功的 v1 → v2 gate 因此得到一个仍为 v1 的快照；只有 live database 在备份成功后才
+记录 v2。后续重新打开 latest v2 不会再次产生 pre-migration backup。
+
+## P1A.1 schema closure
+
+`002_contracts.sql` 增加：
+
+- `idempotency_records.canonical_query`：规范化 query 的独立审计字段；
+- `idempotency_records.command_type`：domain command 名称，历史 v1 行回填为 `unknown`；
+- `idempotency_records.execution_status`：显式 `in_progress` / `completed` 状态；历史行由
+  v1 的 `status_code = 0` 推导；
+- `idempotency_records.completed_at`：完成时间，历史行因无法可靠重建而保持 `NULL`；
+- `delivery_migration_holds.route_decision_id`：独立 route identity。旧开发行可以为
+  `NULL`，不会伪造身份；新的 hold 必须从 durable payload 提供它。
+
+请求指纹由 uppercase method、normalized concrete path、sorted/canonical query 和
+canonical JSON body 的 SHA-256 组成。SQLite 只保存 query、method/path 和 body hash，
+不保存原始敏感 request body；cached response 必须是已清洗的响应。第一次 command claim
+固定 7 天 `expires_at` 并持久化为 `in_progress`；相同 key/fingerprint 在进行中返回
+`idempotency_in_progress`，完成后保存 `completed_at` 和响应，replay 不延长过期时间。
 
 ## 备份
 
-`Store.Backup(ctx, destination)` 使用 SQLite `VACUUM INTO` 生成一致性快照：
+`Store.Backup(ctx, destination)` 使用 SQLite `VACUUM INTO` 生成一致性快照；它同时是
+pre-migration gate 的底层动作：
 
 - 自动创建目标父目录；
 - 目标文件已存在时拒绝覆盖；
@@ -66,8 +118,13 @@ Probe.Readyz()   → GET /readyz
 
 当前实现的测试覆盖：
 
-- WAL、foreign keys、busy timeout 和 migration version；
-- 重启后的幂等 migration；
+- WAL、foreign keys、busy timeout 和 ordered migration version 1 → 2；
+- 001 immutable checksum、002 checksum、future/unknown/missing history 拒绝；
+- fresh/latest 不备份、v1 → v2 的真实 migration 前快照、默认/显式目标和冲突保护；
+- backup failure 阻止所有 schema mutation，002 失败时事务整体回滚；
+- 重启后的幂等 migration，且 latest database 不重复创建 pre-migration backup；
+- request fingerprint 的 method/path/query/body 语义、显式 in-progress/completed、completed_at 和固定 7 天 expiry；
+- `migration_held` 的 route decision identity 序列化、旧数据安全回填和 crash-style 独立恢复；
 - future schema 拒绝与不降级；
 - 一致性 backup、目标覆盖保护和 source/destination 冲突；
 - SQLite 打开失败时 health 仍存活、readiness 返回 503；

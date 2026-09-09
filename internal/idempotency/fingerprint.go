@@ -30,6 +30,7 @@ var (
 type Fingerprint struct {
 	Method         string `json:"method"`
 	NormalizedPath string `json:"normalized_path"`
+	CanonicalQuery string `json:"canonical_query"`
 	BodySHA256     string `json:"body_sha256"`
 }
 
@@ -38,7 +39,7 @@ func NewFingerprint(method, requestPath string, body []byte) (Fingerprint, error
 	if method == "" || strings.ContainsAny(method, " \t\r\n") {
 		return Fingerprint{}, ErrInvalidMethod
 	}
-	normalizedPath, err := NormalizePath(requestPath)
+	normalizedPath, canonicalQuery, err := normalizeRequestPath(requestPath)
 	if err != nil {
 		return Fingerprint{}, err
 	}
@@ -52,6 +53,7 @@ func NewFingerprint(method, requestPath string, body []byte) (Fingerprint, error
 	return Fingerprint{
 		Method:         method,
 		NormalizedPath: normalizedPath,
+		CanonicalQuery: canonicalQuery,
 		BodySHA256:     hex.EncodeToString(bodyHash[:]),
 	}, nil
 }
@@ -72,14 +74,28 @@ func NormalizeKey(key string) (string, error) {
 // NormalizePath canonicalizes the concrete API path, not only the router
 // template. Resource identifiers therefore remain part of the identity.
 func NormalizePath(requestPath string) (string, error) {
+	normalizedPath, _, err := normalizeRequestPath(requestPath)
+	return normalizedPath, err
+}
+
+// CanonicalQuery returns the sorted, escaped query string that participates in
+// a command fingerprint. It is persisted separately from NormalizedPath so a
+// SQLite record can audit every request-semantic component without retaining
+// the raw request body.
+func CanonicalQuery(requestPath string) (string, error) {
+	_, canonicalQuery, err := normalizeRequestPath(requestPath)
+	return canonicalQuery, err
+}
+
+func normalizeRequestPath(requestPath string) (string, string, error) {
 	requestPath = strings.TrimSpace(requestPath)
 	if requestPath == "" || strings.ContainsAny(requestPath, "\r\n") {
-		return "", ErrInvalidPath
+		return "", "", ErrInvalidPath
 	}
 
 	u, err := url.ParseRequestURI(requestPath)
 	if err != nil || u.IsAbs() || u.Host != "" || !strings.HasPrefix(u.Path, "/") {
-		return "", ErrInvalidPath
+		return "", "", ErrInvalidPath
 	}
 
 	cleanPath := path.Clean(u.Path)
@@ -93,9 +109,9 @@ func NormalizePath(requestPath string) (string, error) {
 	values := u.Query()
 	u.RawQuery = values.Encode()
 	if u.RawQuery == "" {
-		return cleanPath, nil
+		return cleanPath, "", nil
 	}
-	return cleanPath + "?" + u.RawQuery, nil
+	return cleanPath + "?" + u.RawQuery, u.RawQuery, nil
 }
 
 // CanonicalBody compacts JSON command bodies and lets encoding/json sort map
@@ -132,7 +148,18 @@ func CanonicalBody(body []byte) ([]byte, error) {
 func (f Fingerprint) Equal(other Fingerprint) bool {
 	return f.Method == other.Method &&
 		f.NormalizedPath == other.NormalizedPath &&
+		f.effectiveCanonicalQuery() == other.effectiveCanonicalQuery() &&
 		f.BodySHA256 == other.BodySHA256
+}
+
+func (f Fingerprint) effectiveCanonicalQuery() string {
+	if f.CanonicalQuery != "" {
+		return f.CanonicalQuery
+	}
+	if question := strings.IndexByte(f.NormalizedPath, '?'); question >= 0 {
+		return f.NormalizedPath[question+1:]
+	}
+	return ""
 }
 
 type Comparison uint8

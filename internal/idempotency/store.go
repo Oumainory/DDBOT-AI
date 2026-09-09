@@ -13,21 +13,39 @@ const DefaultRetention = 7 * 24 * time.Hour
 var (
 	ErrInvalidPrincipal = errors.New("idempotency: invalid principal")
 	ErrConflict         = errors.New("idempotency_conflict")
+	ErrInProgress       = errors.New("idempotency_in_progress")
 	ErrNotReserved      = errors.New("idempotency: request is not reserved")
+	ErrInvalidCommand   = errors.New("idempotency: invalid command type")
+)
+
+type ExecutionStatus string
+
+const (
+	ExecutionInProgress ExecutionStatus = "in_progress"
+	ExecutionCompleted  ExecutionStatus = "completed"
+	UnknownCommandType                  = "unknown"
 )
 
 type Record struct {
-	Principal   string            `json:"principal"`
-	Key         string            `json:"key"`
-	Fingerprint Fingerprint       `json:"fingerprint"`
-	StatusCode  int               `json:"status_code"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	Body        []byte            `json:"body,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
-	ExpiresAt   time.Time         `json:"expires_at"`
+	Principal       string            `json:"principal"`
+	Key             string            `json:"key"`
+	Fingerprint     Fingerprint       `json:"fingerprint"`
+	CommandType     string            `json:"command_type"`
+	ExecutionStatus ExecutionStatus   `json:"execution_status"`
+	StatusCode      int               `json:"status_code"`
+	Headers         map[string]string `json:"headers,omitempty"`
+	Body            []byte            `json:"body,omitempty"`
+	CreatedAt       time.Time         `json:"created_at"`
+	CompletedAt     *time.Time        `json:"completed_at,omitempty"`
+	ExpiresAt       time.Time         `json:"expires_at"`
 }
 
-func (r Record) Completed() bool { return r.StatusCode != 0 }
+func (r Record) Completed() bool {
+	if r.ExecutionStatus != "" {
+		return r.ExecutionStatus == ExecutionCompleted
+	}
+	return r.StatusCode != 0
+}
 
 type Outcome uint8
 
@@ -35,6 +53,7 @@ const (
 	OutcomeReserved Outcome = iota
 	OutcomeReplay
 	OutcomeConflict
+	OutcomeInProgress
 )
 
 // MemoryStore is a reference implementation of the idempotency contract.
@@ -56,15 +75,28 @@ func NewMemoryStore(retention time.Duration) *MemoryStore {
 
 func recordKey(principal, key string) string { return principal + "\x00" + key }
 
-// Begin atomically reserves a key. The same key and request fingerprint
-// returns the original record for replay. A different method/path/body hash
-// never reuses the original result and returns ErrConflict (HTTP 409).
+// Begin atomically reserves a key. A matching completed request returns the
+// original record for replay; a matching in-progress request is explicit and
+// returns ErrInProgress. A different method/path/query/body hash never reuses
+// the original result and returns ErrConflict (HTTP 409).
 func (s *MemoryStore) Begin(principal, key string, fingerprint Fingerprint, now time.Time) (Record, Outcome, error) {
+	return s.BeginCommand(principal, key, UnknownCommandType, fingerprint, now)
+}
+
+// BeginCommand atomically claims a command key. A matching completed record
+// is replayable; a matching in-progress record is explicit and must not be
+// executed twice. Command type is part of the semantic identity alongside the
+// request fingerprint.
+func (s *MemoryStore) BeginCommand(principal, key, commandType string, fingerprint Fingerprint, now time.Time) (Record, Outcome, error) {
 	principal = strings.TrimSpace(principal)
 	if principal == "" {
 		return Record{}, OutcomeReserved, ErrInvalidPrincipal
 	}
-	key, err := NormalizeKey(key)
+	commandType, err := normalizeCommandType(commandType)
+	if err != nil {
+		return Record{}, OutcomeReserved, err
+	}
+	key, err = NormalizeKey(key)
 	if err != nil {
 		return Record{}, OutcomeReserved, err
 	}
@@ -78,18 +110,23 @@ func (s *MemoryStore) Begin(principal, key string, fingerprint Fingerprint, now 
 
 	lookupKey := recordKey(principal, key)
 	if existing, ok := s.records[lookupKey]; ok {
-		if !existing.Fingerprint.Equal(fingerprint) {
+		if !existing.Fingerprint.Equal(fingerprint) || existing.CommandType != commandType {
 			return Record{}, OutcomeConflict, ErrConflict
+		}
+		if !existing.Completed() {
+			return cloneRecord(existing), OutcomeInProgress, ErrInProgress
 		}
 		return cloneRecord(existing), OutcomeReplay, nil
 	}
 
 	record := Record{
-		Principal:   principal,
-		Key:         key,
-		Fingerprint: fingerprint,
-		CreatedAt:   now,
-		ExpiresAt:   now.Add(s.retention),
+		Principal:       principal,
+		Key:             key,
+		Fingerprint:     fingerprint,
+		CommandType:     commandType,
+		ExecutionStatus: ExecutionInProgress,
+		CreatedAt:       now,
+		ExpiresAt:       now.Add(s.retention),
 	}
 	s.records[lookupKey] = record
 	return cloneRecord(record), OutcomeReserved, nil
@@ -99,6 +136,17 @@ func (s *MemoryStore) Begin(principal, key string, fingerprint Fingerprint, now 
 // the fingerprint check so a caller cannot accidentally complete a conflicting
 // request under an existing key.
 func (s *MemoryStore) Complete(principal, key string, fingerprint Fingerprint, statusCode int, headers map[string]string, body []byte, now time.Time) (Record, error) {
+	return s.complete(principal, key, "", fingerprint, statusCode, headers, body, now)
+}
+
+// CompleteCommand finalizes a claimed command and stores the exact sanitized
+// response that a replay must receive. ExpiresAt remains tied to the first
+// accepted claim and is never extended by completion or replay.
+func (s *MemoryStore) CompleteCommand(principal, key, commandType string, fingerprint Fingerprint, statusCode int, headers map[string]string, body []byte, now time.Time) (Record, error) {
+	return s.complete(principal, key, commandType, fingerprint, statusCode, headers, body, now)
+}
+
+func (s *MemoryStore) complete(principal, key, commandType string, fingerprint Fingerprint, statusCode int, headers map[string]string, body []byte, now time.Time) (Record, error) {
 	principal = strings.TrimSpace(principal)
 	key, err := NormalizeKey(key)
 	if principal == "" {
@@ -123,6 +171,15 @@ func (s *MemoryStore) Complete(principal, key string, fingerprint Fingerprint, s
 	if !record.Fingerprint.Equal(fingerprint) {
 		return Record{}, ErrConflict
 	}
+	if commandType != "" {
+		commandType, err = normalizeCommandType(commandType)
+		if err != nil {
+			return Record{}, err
+		}
+		if record.CommandType != commandType {
+			return Record{}, ErrConflict
+		}
+	}
 	if record.Completed() {
 		return cloneRecord(record), nil
 	}
@@ -132,6 +189,9 @@ func (s *MemoryStore) Complete(principal, key string, fingerprint Fingerprint, s
 	record.StatusCode = statusCode
 	record.Headers = cloneHeaders(headers)
 	record.Body = append([]byte(nil), body...)
+	record.ExecutionStatus = ExecutionCompleted
+	completedAt := now
+	record.CompletedAt = &completedAt
 	s.records[lookupKey] = record
 	return cloneRecord(record), nil
 }
@@ -178,7 +238,19 @@ func (s *MemoryStore) removeExpiredLocked(now time.Time) int {
 func cloneRecord(record Record) Record {
 	record.Headers = cloneHeaders(record.Headers)
 	record.Body = bytes.Clone(record.Body)
+	if record.CompletedAt != nil {
+		completedAt := *record.CompletedAt
+		record.CompletedAt = &completedAt
+	}
 	return record
+}
+
+func normalizeCommandType(commandType string) (string, error) {
+	commandType = strings.TrimSpace(commandType)
+	if commandType == "" {
+		return "", ErrInvalidCommand
+	}
+	return commandType, nil
 }
 
 func cloneHeaders(headers map[string]string) map[string]string {
