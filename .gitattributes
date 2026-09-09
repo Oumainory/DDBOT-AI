@@ -1,0 +1,27 @@
+# Keep compatibility fixtures, Go sources, templates, and documentation
+# byte-stable across Windows and Linux checkouts. Golden comparison must not
+# depend on core.autocrlf or the developer's editor.
+* text=auto
+
+*.go        text eol=lf
+*.json      text eol=lf
+*.yaml      text eol=lf
+*.yml       text eol=lf
+*.md        text eol=lf
+*.sql       text eol=lf
+*.tmpl      text eol=lf
+*.template  text eol=lf
+*.proto     text eol=lf
+*.sh        text eol=lf
+
+*.ps1       text eol=crlf
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.webp      binary
+*.zip       binary
+*.exe       binary

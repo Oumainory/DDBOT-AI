@@ -12,6 +12,8 @@ type manifest struct {
 	Product            string    `json:"product"`
 	BaselineRepository string    `json:"baseline_repository"`
 	BaselineCommit     string    `json:"baseline_commit"`
+	BaselineAncestor   bool      `json:"baseline_ancestor_required"`
+	CompatibilityCmd   string    `json:"compatibility_command"`
 	Fixtures           []fixture `json:"fixtures"`
 }
 
@@ -42,6 +44,9 @@ func TestBaselineManifestIsComplete(t *testing.T) {
 	}
 	if got.BaselineCommit != "a6364e7182ec4eee93dd78e09fe7a7efd92bffab" {
 		t.Fatalf("baseline_commit = %q, want locked upstream commit", got.BaselineCommit)
+	}
+	if !got.BaselineAncestor || got.CompatibilityCmd == "" {
+		t.Fatalf("manifest must require an ancestor baseline and executable compatibility command")
 	}
 	if len(got.Fixtures) < 6 {
 		t.Fatalf("fixture count = %d, want at least 6", len(got.Fixtures))

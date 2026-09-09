@@ -30,3 +30,18 @@ it does not pretend to be a second implementation of the upstream bot.
 Any intentional Legacy behavior change requires an explicit specification
 change and a reviewed fixture update. Observation, AI, Dashboard, and
 Connector work may not silently update the baseline.
+
+## Executable gate
+
+From a clean checkout with the locked upstream commit available locally, run:
+
+```sh
+CGO_ENABLED=0 go run ./compat/cmd verify --report compat-report.json
+```
+
+The command creates a detached worktree at the baseline commit, runs every
+fixture selector against the baseline and current tree, removes wall-clock and
+toolchain noise, and compares the canonical pass/fail/skip outcome for every
+probe. A selector that fails in either side is a gate failure; a status change
+is a semantic diff. CI runs this command after the full baseline/current Linux
+test jobs and uploads the JSON report.

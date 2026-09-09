@@ -1,6 +1,7 @@
 package migration
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -33,13 +34,19 @@ func TestHeldDeliverySurvivesSerializationAndReleasesOnlyForItsMigration(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Drop the original payload and holder before recovery. The assertions
+	// below must be satisfied by persisted bytes only, not shared references.
+	held = HeldDelivery{}
 	var afterRestart HeldDelivery
 	if err := json.Unmarshal(encoded, &afterRestart); err != nil {
 		t.Fatal(err)
 	}
 
 	released, err := afterRestart.Release("migration-1", json.RawMessage(`{"connector_id":"onebot-new","target_id":"group-1"}`))
-	if err != nil || released.DeliveryID != "delivery-1" {
+	if err != nil || released.DeliveryID != "delivery-1" ||
+		released.LogicalTarget.ExternalID != "123" ||
+		string(released.Message.Segments[0].Data["text"].(string)) != "hello" ||
+		!bytes.Equal(released.RouteSnapshot, json.RawMessage(`{"connector_id":"onebot-new","target_id":"group-1"}`)) {
 		t.Fatalf("released = %#v, err = %v", released, err)
 	}
 	if _, err := afterRestart.Release("migration-other", nil); !errors.Is(err, ErrMigrationMismatch) {

@@ -2,6 +2,7 @@
 /ddbot-ai
 /.coverage.out
 /coverage.html
+/compat-report.json
 /qrcode.png
 /dist/
 /version*.json

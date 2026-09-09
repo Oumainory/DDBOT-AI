@@ -17,6 +17,9 @@ $(TARGET): $(SRC) go.mod go.sum
 
 build: $(TARGET)
 
+compat-verify:
+	CGO_ENABLED=0 go run ./compat/cmd verify --report compat-report.json
+
 proto: $(PROTO)
 	protoc --go_out=. $(PROTO)
 

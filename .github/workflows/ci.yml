@@ -13,6 +13,7 @@ permissions:
 
 env:
   GO_VERSION: '1.26.2'
+  BASELINE_COMMIT: 'a6364e7182ec4eee93dd78e09fe7a7efd92bffab'
 
 jobs:
   test:
@@ -21,6 +22,8 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -66,6 +69,8 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -78,9 +83,69 @@ jobs:
           CGO_ENABLED: '0'
         run: go test ./compat -run TestBaselineManifestIsComplete -count=1
 
+  baseline:
+    name: Locked upstream baseline tests
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run locked baseline root and adapter tests
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          baseline_dir=$(mktemp -d)
+          cleanup() {
+            git worktree remove --force "$baseline_dir" || true
+          }
+          trap cleanup EXIT
+          git merge-base --is-ancestor "$BASELINE_COMMIT" "$GITHUB_SHA"
+          git worktree add --detach "$baseline_dir" "$BASELINE_COMMIT"
+          (cd "$baseline_dir" && go test ./...)
+          (cd "$baseline_dir/adapter" && go test ./...)
+
+  compatibility-diff:
+    name: Baseline/current compatibility diff
+    needs: [test, baseline, compatibility-manifest]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run executable compatibility gate
+        env:
+          CGO_ENABLED: '0'
+        run: go run ./compat/cmd verify --baseline "$BASELINE_COMMIT" --report compat-report.json
+
+      - name: Upload compatibility report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-report
+          path: compat-report.json
+          if-no-files-found: ignore
+
   pure-go-build:
     name: Pure Go build (${{ matrix.goos }}/${{ matrix.goarch }})
-    needs: [test, compatibility-manifest]
+    needs: [test, baseline, compatibility-manifest, compatibility-diff]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -95,6 +160,8 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5

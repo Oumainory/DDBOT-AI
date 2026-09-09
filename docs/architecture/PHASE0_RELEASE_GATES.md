@@ -23,3 +23,11 @@ CI 和发行工作流必须在 `CGO_ENABLED=0` 下构建：
 - Bilibili/Twitter 典型事件映射。
 
 时间戳、随机请求 ID、临时路径等只按 fixture 声明的规则规范化。不能为了让 diff 通过而忽略正文、Target 身份、发送次数、分片顺序、过滤结果或 BuntDB 状态。
+
+Windows 或其他平台上的失败只有在未修改的锁定基线同环境复现后才能登记为例外；当前例外清单见 [PHASE0_BASELINE_EXCEPTIONS.md](./PHASE0_BASELINE_EXCEPTIONS.md)。
+
+Phase 0 Foundation 包（`internal/domain`、`policy`、`classifier`、
+`idempotency`、`migration`、`runtimeconfig`、`security` 和
+`deliverysnapshot`）必须保持纯契约：不得通过 `init()`、全局注册、
+Legacy blank import、goroutine、SQLite 打开或启动路径接线改变 WSa 行为。
+`compat/TestFoundationPackagesHaveNoRuntimeSideEffects` 是对应的静态门禁。

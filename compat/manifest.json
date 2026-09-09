@@ -3,6 +3,8 @@
   "product": "DDBOT-AI",
   "baseline_repository": "https://github.com/cnxysoft/DDBOT-WSa",
   "baseline_commit": "a6364e7182ec4eee93dd78e09fe7a7efd92bffab",
+  "baseline_ancestor_required": true,
+  "compatibility_command": "CGO_ENABLED=0 go run ./compat/cmd verify",
   "fixtures": [
     {
       "id": "commands-watch-unwatch",
