@@ -69,7 +69,7 @@ pending migration。备份失败时 live schema、原始数据和 `schema_migrat
 快照。只有 live database 在备份成功后才记录对应 migration。后续重新打开 latest v3
 不会再次产生 pre-migration backup。
 
-## P1A.1 schema closure
+## P1A.1 / P1A.2 schema closure
 
 `002_contracts.sql` 增加：
 
