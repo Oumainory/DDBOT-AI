@@ -45,8 +45,8 @@ func TestOpenConfiguresSQLiteAndAppliesMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if version != 2 {
-		t.Fatalf("schema version = %d, want 2", version)
+	if version != 3 {
+		t.Fatalf("schema version = %d, want 3", version)
 	}
 	rows, err := store.db.QueryContext(ctx, "SELECT version FROM schema_migrations ORDER BY version")
 	if err != nil {
@@ -64,8 +64,8 @@ func TestOpenConfiguresSQLiteAndAppliesMigration(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(versions) != 2 || versions[0] != 1 || versions[1] != 2 {
-		t.Fatalf("migration order = %#v, want [1 2]", versions)
+	if len(versions) != 3 || versions[0] != 1 || versions[1] != 2 || versions[2] != 3 {
+		t.Fatalf("migration order = %#v, want [1 2 3]", versions)
 	}
 	var tableName string
 	if err := store.db.QueryRowContext(ctx,
@@ -93,7 +93,7 @@ func TestMigrationsAreIdempotentAcrossRestart(t *testing.T) {
 	}
 	defer second.Close()
 	version, err := second.SchemaVersion(ctx)
-	if err != nil || version != 2 {
+	if err != nil || version != 3 {
 		t.Fatalf("restart schema version = %d, err = %v", version, err)
 	}
 }

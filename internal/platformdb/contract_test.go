@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -18,8 +17,8 @@ func TestMigrationDefinitionsAreOrderedAndIndependentlyChecksummed(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(definitions) != 2 {
-		t.Fatalf("migration count = %d, want 2", len(definitions))
+	if len(definitions) != 3 {
+		t.Fatalf("migration count = %d, want 3", len(definitions))
 	}
 	if definitions[0].version != 1 || definitions[0].filename != "001_core.sql" || definitions[0].name != "core" {
 		t.Fatalf("v1 definition = %#v", definitions[0])
@@ -27,11 +26,17 @@ func TestMigrationDefinitionsAreOrderedAndIndependentlyChecksummed(t *testing.T)
 	if definitions[1].version != 2 || definitions[1].filename != "002_contracts.sql" || definitions[1].name != "contracts" {
 		t.Fatalf("v2 definition = %#v", definitions[1])
 	}
+	if definitions[2].version != 3 || definitions[2].filename != "003_contract_guards.sql" || definitions[2].name != "contract_guards" {
+		t.Fatalf("v3 definition = %#v", definitions[2])
+	}
 	if definitions[0].checksum != "sha256:34ccff6f49b883e80fbbd76abfb54eaddd34d9b9355305a9b8c1e032a5b95751" {
 		t.Fatalf("immutable v1 checksum changed: %s", definitions[0].checksum)
 	}
-	if definitions[1].checksum == definitions[0].checksum || !strings.HasPrefix(definitions[1].checksum, "sha256:") {
-		t.Fatalf("v2 checksum = %q", definitions[1].checksum)
+	if definitions[1].checksum != "sha256:9cb02c938480c5ea5b15581b3ecdcf76dd2795491af9e97871c3b03af0cc1184" {
+		t.Fatalf("immutable v2 checksum changed: %s", definitions[1].checksum)
+	}
+	if definitions[2].checksum != "sha256:381fb13152366c40b2e4d1c69bc28ea8a62b4aeeee02438f2ea509f19bc4a59d" {
+		t.Fatalf("immutable v3 checksum changed: %s", definitions[2].checksum)
 	}
 	for index, definition := range definitions {
 		if definition.version != index+1 {
@@ -71,11 +76,36 @@ func TestFreshAndLatestDatabaseDoNotCreatePreMigrationBackup(t *testing.T) {
 	}
 }
 
-func TestV1ToV2TakesBackupBeforeSchemaMutation(t *testing.T) {
+func TestV1ToV2HistoryCanBePreparedBeforeV3(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "v2.sqlite")
+	createV2Database(t, databasePath)
+	db := openRawDatabase(t, databasePath)
+	defer db.Close()
+	if version := rawSchemaVersion(t, db); version != 2 {
+		t.Fatalf("prepared schema version = %d, want v2", version)
+	}
+	for _, column := range []string{"canonical_query", "command_type", "execution_status", "completed_at"} {
+		if !rawHasColumn(t, db, "idempotency_records", column) {
+			t.Fatalf("prepared v2 database missing idempotency column %q", column)
+		}
+	}
+	if !rawHasColumn(t, db, "delivery_migration_holds", "route_decision_id") {
+		t.Fatal("prepared v2 database missing route_decision_id")
+	}
+	var triggerCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'trg_delivery_migration_holds_route_decision_%'").Scan(&triggerCount); err != nil {
+		t.Fatal(err)
+	}
+	if triggerCount != 0 {
+		t.Fatalf("prepared v2 database has %d v3 trigger(s)", triggerCount)
+	}
+}
+
+func TestV1ToV3TakesBackupBeforeSchemaMutation(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	databasePath := filepath.Join(dir, "v1.sqlite")
-	backupPath := filepath.Join(dir, "v1-before-v2.sqlite")
+	backupPath := filepath.Join(dir, "v1-before-v3.sqlite")
 	createV1Database(t, databasePath)
 
 	store, err := Open(ctx, Config{
@@ -91,7 +121,7 @@ func TestV1ToV2TakesBackupBeforeSchemaMutation(t *testing.T) {
 	if got := store.LastPreMigrationBackupPath(); got != backupPath {
 		t.Fatalf("pre-migration backup path = %q, want %q", got, backupPath)
 	}
-	if version, err := store.SchemaVersion(ctx); err != nil || version != 2 {
+	if version, err := store.SchemaVersion(ctx); err != nil || version != 3 {
 		t.Fatalf("live schema version = %d, err = %v", version, err)
 	}
 	if err := store.Close(); err != nil {
@@ -121,8 +151,8 @@ func TestV1ToV2TakesBackupBeforeSchemaMutation(t *testing.T) {
 
 	live := openRawDatabase(t, databasePath)
 	defer live.Close()
-	if version := rawSchemaVersion(t, live); version != 2 {
-		t.Fatalf("live schema version = %d, want v2", version)
+	if version := rawSchemaVersion(t, live); version != 3 {
+		t.Fatalf("live schema version = %d, want v3", version)
 	}
 	for _, column := range []string{"canonical_query", "command_type", "execution_status", "completed_at"} {
 		if !rawHasColumn(t, live, "idempotency_records", column) {
@@ -141,6 +171,68 @@ func TestV1ToV2TakesBackupBeforeSchemaMutation(t *testing.T) {
 	}
 	if routeDecisionID.Valid {
 		t.Fatalf("legacy route decision id = %q, want NULL rather than fabricated identity", routeDecisionID.String)
+	}
+	if _, err := live.Exec("UPDATE delivery_migration_holds SET event_id = 'legacy-event-updated' WHERE delivery_id = 'legacy-delivery'"); err != nil {
+		t.Fatalf("updating unrelated legacy hold field = %v", err)
+	}
+}
+
+func TestV2ToV3TakesV2BackupAndPreservesLegacyHold(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	databasePath := filepath.Join(dir, "v2.sqlite")
+	backupPath := filepath.Join(dir, "v2-before-v3.sqlite")
+	createV2Database(t, databasePath)
+
+	store, err := Open(ctx, Config{
+		Path: databasePath,
+		Now:  func() time.Time { return time.Unix(1700000000, 0).UTC() },
+		PreMigrationBackup: PreMigrationBackupConfig{
+			Destination: backupPath,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store.LastPreMigrationBackupPath(); got != backupPath {
+		t.Fatalf("pre-migration backup path = %q, want %q", got, backupPath)
+	}
+	if version, err := store.SchemaVersion(ctx); err != nil || version != 3 {
+		t.Fatalf("live schema version = %d, err = %v", version, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	backup := openRawDatabase(t, backupPath)
+	if version := rawSchemaVersion(t, backup); version != 2 {
+		t.Fatalf("backup schema version = %d, want v2", version)
+	}
+	if !rawHasColumn(t, backup, "delivery_migration_holds", "route_decision_id") {
+		t.Fatal("v2 backup missing route_decision_id")
+	}
+	var backupRoute sql.NullString
+	if err := backup.QueryRow("SELECT route_decision_id FROM delivery_migration_holds WHERE delivery_id = 'legacy-delivery'").Scan(&backupRoute); err != nil {
+		t.Fatal(err)
+	}
+	if backupRoute.Valid {
+		t.Fatalf("v2 backup legacy route decision id = %q, want NULL", backupRoute.String)
+	}
+	if err := backup.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	live := openRawDatabase(t, databasePath)
+	defer live.Close()
+	if version := rawSchemaVersion(t, live); version != 3 {
+		t.Fatalf("live schema version = %d, want v3", version)
+	}
+	var liveRoute sql.NullString
+	if err := live.QueryRow("SELECT route_decision_id FROM delivery_migration_holds WHERE delivery_id = 'legacy-delivery'").Scan(&liveRoute); err != nil {
+		t.Fatal(err)
+	}
+	if liveRoute.Valid {
+		t.Fatalf("live legacy route decision id = %q, want NULL", liveRoute.String)
 	}
 }
 
@@ -180,11 +272,11 @@ func TestPreMigrationBackupFailureLeavesV1Untouched(t *testing.T) {
 	}
 }
 
-func TestSecondStartupAfterV2DoesNotRepeatPreMigrationBackup(t *testing.T) {
+func TestSecondStartupAfterV3DoesNotRepeatPreMigrationBackup(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	databasePath := filepath.Join(dir, "v1.sqlite")
-	backupPath := filepath.Join(dir, "before-v2.sqlite")
+	backupPath := filepath.Join(dir, "before-v3.sqlite")
 	createV1Database(t, databasePath)
 	first, err := Open(ctx, Config{Path: databasePath, PreMigrationBackup: PreMigrationBackupConfig{Destination: backupPath}})
 	if err != nil {
@@ -220,7 +312,7 @@ func TestDefaultPreMigrationBackupDestinationIsDeterministic(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	want := databasePath + ".pre-migration-v1-to-v2-20231114T221320.123000000Z.sqlite"
+	want := databasePath + ".pre-migration-v1-to-v3-20231114T221320.123000000Z.sqlite"
 	if backupPath != want {
 		t.Fatalf("default backup path = %q, want %q", backupPath, want)
 	}
@@ -247,6 +339,82 @@ func TestMigration002ChecksumMismatchIsRejected(t *testing.T) {
 	opened, err := Open(ctx, Config{Path: databasePath})
 	if opened != nil || !errors.Is(err, ErrMigrationChecksum) {
 		t.Fatalf("Open(v2 checksum mismatch) = store %v, err %v", opened, err)
+	}
+}
+
+func TestMigration003ChecksumMismatchIsRejected(t *testing.T) {
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "latest.sqlite")
+	store, err := Open(ctx, Config{Path: databasePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db := openRawDatabase(t, databasePath)
+	mustExec(t, db, "UPDATE schema_migrations SET checksum = 'sha256:tampered-v3' WHERE version = 3")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := Open(ctx, Config{Path: databasePath})
+	if opened != nil || !errors.Is(err, ErrMigrationChecksum) {
+		t.Fatalf("Open(v3 checksum mismatch) = store %v, err %v", opened, err)
+	}
+}
+
+func TestDeliveryMigrationHoldRouteDecisionGuards(t *testing.T) {
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "latest.sqlite")
+	store, err := Open(ctx, Config{Path: databasePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	insert := func(deliveryID string, routeDecisionID any) error {
+		_, err := store.db.ExecContext(ctx, `INSERT INTO delivery_migration_holds
+(delivery_id, migration_id, event_id, route_snapshot_json, logical_target_json, message_snapshot_json, payload_schema_version, route_decision_id, status, created_at)
+VALUES (?, 'migration-1', 'event-1', '{}', '{}', '{}', 1, ?, 'migration_held', 1700000000)`, deliveryID, routeDecisionID)
+		return err
+	}
+	for index, routeDecisionID := range []any{nil, "", "   "} {
+		if err := insert("invalid-route-"+string(rune('a'+index)), routeDecisionID); err == nil {
+			t.Fatalf("invalid route decision id %#v was accepted", routeDecisionID)
+		}
+	}
+	if err := insert("valid-route", "route-1"); err != nil {
+		t.Fatalf("valid route decision id insert = %v", err)
+	}
+	for _, value := range []any{nil, "", "   "} {
+		if _, err := store.db.ExecContext(ctx, "UPDATE delivery_migration_holds SET route_decision_id = ? WHERE delivery_id = 'valid-route'", value); err == nil {
+			t.Fatalf("invalid route decision id update %#v was accepted", value)
+		}
+	}
+	if _, err := store.db.ExecContext(ctx, "UPDATE delivery_migration_holds SET route_decision_id = 'route-2' WHERE delivery_id = 'valid-route'"); err != nil {
+		t.Fatalf("valid route decision id update = %v", err)
+	}
+}
+
+func TestDeliveryMigrationHoldGuardDoesNotBlockUnrelatedLegacyUpdates(t *testing.T) {
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "v2.sqlite")
+	createV2Database(t, databasePath)
+	store, err := Open(ctx, Config{Path: databasePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	var routeDecisionID sql.NullString
+	if err := store.db.QueryRowContext(ctx, "SELECT route_decision_id FROM delivery_migration_holds WHERE delivery_id = 'legacy-delivery'").Scan(&routeDecisionID); err != nil {
+		t.Fatal(err)
+	}
+	if routeDecisionID.Valid {
+		t.Fatalf("legacy route decision id = %q, want NULL", routeDecisionID.String)
+	}
+	if _, err := store.db.ExecContext(ctx, "UPDATE delivery_migration_holds SET event_id = 'legacy-event-updated' WHERE delivery_id = 'legacy-delivery'"); err != nil {
+		t.Fatalf("unrelated legacy hold update = %v", err)
 	}
 }
 
@@ -324,6 +492,32 @@ func TestMigration002RollsBackAsOneTransaction(t *testing.T) {
 	}
 	if rawHasColumn(t, db, "idempotency_records", "canonical_query") || rawHasColumn(t, db, "delivery_migration_holds", "route_decision_id") {
 		t.Fatal("failed v2 migration left partial columns")
+	}
+}
+
+func createV2Database(t *testing.T, path string) {
+	t.Helper()
+	createV1Database(t, path)
+	db := openRawDatabase(t, path)
+	defer db.Close()
+	definitions, err := migrationDefinitions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(definitions[1].sql); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)", definitions[1].version, definitions[1].name, definitions[1].checksum, 1700000000); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 }
 

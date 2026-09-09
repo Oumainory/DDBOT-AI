@@ -1,4 +1,4 @@
--- DDBOT-AI current v2 schema reference (non-authoritative).
+-- DDBOT-AI current v3 schema reference (non-authoritative).
 -- The authoritative, immutable history is internal/platformdb/migrations/*.sql.
 -- The Core will execute these statements on the single SQLite owner
 -- connection with foreign_keys=ON, WAL, and a busy timeout.
@@ -60,6 +60,27 @@ CREATE TABLE IF NOT EXISTS delivery_migration_holds (
 
 CREATE INDEX IF NOT EXISTS idx_delivery_migration_holds_migration
     ON delivery_migration_holds (migration_id, created_at);
+
+-- New holds must carry the independent route decision identity. Existing
+-- legacy rows upgraded from v1/v2 may remain NULL and are intentionally not
+-- backfilled with a fabricated identity.
+CREATE TRIGGER IF NOT EXISTS trg_delivery_migration_holds_route_decision_insert
+BEFORE INSERT ON delivery_migration_holds
+FOR EACH ROW
+WHEN NEW.route_decision_id IS NULL
+  OR length(trim(NEW.route_decision_id)) = 0
+BEGIN
+    SELECT RAISE(ABORT, 'migration_held route_decision_id is required');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_delivery_migration_holds_route_decision_update
+BEFORE UPDATE OF route_decision_id ON delivery_migration_holds
+FOR EACH ROW
+WHEN NEW.route_decision_id IS NULL
+  OR length(trim(NEW.route_decision_id)) = 0
+BEGIN
+    SELECT RAISE(ABORT, 'migration_held route_decision_id cannot be cleared');
+END;
 
 -- The release coordinator must delete/transition only rows owned by its
 -- migration_id. `unknown` deliveries are intentionally absent from this

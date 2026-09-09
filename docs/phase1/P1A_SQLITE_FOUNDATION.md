@@ -38,8 +38,8 @@ applied_at
 每个 migration 在一个事务内执行。已经应用的版本必须同时匹配 name 和 checksum；修改已发布 SQL、未知版本、缺失历史或高于当前二进制的版本都会在任何 schema mutation 前拒绝启动，避免静默降级或重写既有数据。
 
 `001_core.sql` 已发布且 immutable，不能被重写或重新计算 checksum。P1A.1 新增
-`002_contracts.sql`，因此 fresh database 按 `1 → 2` 创建 latest schema，已有 v1
-database 按同一顺序升级。
+`002_contracts.sql`，P1A.2 新增 `003_contract_guards.sql`；因此 fresh database 按
+`1 → 2 → 3` 创建 latest schema，已有 v1/v2 database 按缺失的有序 migration 升级。
 
 ## Pre-migration backup gate
 
@@ -65,8 +65,9 @@ fresh empty database 不需要无意义的备份；已经是 latest schema 的 d
 目标不可创建或 `VACUUM INTO` 失败，都会返回 `ErrPreMigrationBackup`，且不会执行任何
 pending migration。备份失败时 live schema、原始数据和 `schema_migrations` 都保持不变。
 
-成功的 v1 → v2 gate 因此得到一个仍为 v1 的快照；只有 live database 在备份成功后才
-记录 v2。后续重新打开 latest v2 不会再次产生 pre-migration backup。
+成功的 v1 → v3 gate 因此得到一个仍为 v1 的快照；v2 → v3 同理得到一个仍为 v2 的
+快照。只有 live database 在备份成功后才记录对应 migration。后续重新打开 latest v3
+不会再次产生 pre-migration backup。
 
 ## P1A.1 schema closure
 
@@ -85,6 +86,17 @@ canonical JSON body 的 SHA-256 组成。SQLite 只保存 query、method/path �
 不保存原始敏感 request body；cached response 必须是已清洗的响应。第一次 command claim
 固定 7 天 `expires_at` 并持久化为 `in_progress`；相同 key/fingerprint 在进行中返回
 `idempotency_in_progress`，完成后保存 `completed_at` 和响应，replay 不延长过期时间。
+
+路径与 query 严格分离：`NormalizedPath` 只包含要求以 `/` 开头的 concrete path，经过
+`path.Clean` 并去掉根路径之外的尾部 `/`；它永远不包含 `?`。`CanonicalQuery` 只包含
+`url.Values.Encode()` 产生的稳定排序、转义 query（无 query 时为空字符串），因此相同
+path 的不同 query 必然是不同请求指纹。
+
+P1A.2 的 `003_contract_guards.sql` 在 `delivery_migration_holds` 上增加数据库级双重
+保护：新的 INSERT 必须提供非空、非空白 `route_decision_id`，显式把它更新为 NULL/空值
+也会被拒绝；应用层 `HeldDelivery.Decode` 与 payload identity 校验仍然保留。升级时不
+回填历史身份，v1/v2 已有的 NULL hold 行原样保留；只更新这些旧行的其它字段不会被
+`UPDATE OF route_decision_id` trigger 阻塞。
 
 ## 备份
 
@@ -118,11 +130,12 @@ Probe.Readyz()   → GET /readyz
 
 当前实现的测试覆盖：
 
-- WAL、foreign keys、busy timeout 和 ordered migration version 1 → 2；
-- 001 immutable checksum、002 checksum、future/unknown/missing history 拒绝；
-- fresh/latest 不备份、v1 → v2 的真实 migration 前快照、默认/显式目标和冲突保护；
+- WAL、foreign keys、busy timeout 和 ordered migration version 1 → 2 → 3；
+- 001/002/003 immutable checksum、future/unknown/missing history 拒绝；
+- fresh/latest 不备份、v1 → v3 与 v2 → v3 的真实 migration 前快照、默认/显式目标和冲突保护；
 - backup failure 阻止所有 schema mutation，002 失败时事务整体回滚；
-- 重启后的幂等 migration，且 latest database 不重复创建 pre-migration backup；
+- 重启后的幂等 migration，且 latest v3 database 不重复创建 pre-migration backup；
+- v3 route decision INSERT/UPDATE trigger、legacy NULL hold 保留和非相关字段更新；
 - request fingerprint 的 method/path/query/body 语义、显式 in-progress/completed、completed_at 和固定 7 天 expiry；
 - `migration_held` 的 route decision identity 序列化、旧数据安全回填和 crash-style 独立恢复；
 - future schema 拒绝与不降级；

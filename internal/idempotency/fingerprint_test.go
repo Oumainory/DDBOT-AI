@@ -18,11 +18,41 @@ func TestFingerprintNormalizesPathAndJSONBody(t *testing.T) {
 	if first.CanonicalQuery != "a=1&b=2" {
 		t.Fatalf("canonical query = %q, want a=1&b=2", first.CanonicalQuery)
 	}
+	if first.NormalizedPath != "/api/v2/targets/target_a" {
+		t.Fatalf("normalized path = %q, want /api/v2/targets/target_a", first.NormalizedPath)
+	}
+	if first.NormalizedPath == "" || first.NormalizedPath[len(first.NormalizedPath)-1] == '?' {
+		t.Fatalf("normalized path contains query delimiter: %q", first.NormalizedPath)
+	}
 	if got, err := CanonicalQuery("/api/v2/targets/target_a/?b=2&a=1"); err != nil || got != "a=1&b=2" {
 		t.Fatalf("CanonicalQuery() = %q, %v", got, err)
 	}
-	if NormalizePathMust("/api/v2/targets/target_a/?b=2&a=1") != "/api/v2/targets/target_a?a=1&b=2" {
-		t.Fatal("path was not normalized as expected")
+	if got := NormalizePathMust("/api/v2/targets/target_a/?b=2&a=1"); got != "/api/v2/targets/target_a" {
+		t.Fatalf("normalized path = %q, want /api/v2/targets/target_a", got)
+	}
+}
+
+func TestNormalizePathSeparatesQueryAndRemovesOnlyNonRootTrailingSlash(t *testing.T) {
+	cases := []struct {
+		requestPath string
+		path        string
+		query       string
+	}{
+		{requestPath: "/api/v2/targets/target_a/?b=2&a=1", path: "/api/v2/targets/target_a", query: "a=1&b=2"},
+		{requestPath: "/api/v2/targets/target_a///", path: "/api/v2/targets/target_a", query: ""},
+		{requestPath: "/", path: "/", query: ""},
+	}
+	for _, test := range cases {
+		fingerprint, err := NewFingerprint("POST", test.requestPath, nil)
+		if err != nil {
+			t.Fatalf("NewFingerprint(%q) error = %v", test.requestPath, err)
+		}
+		if fingerprint.NormalizedPath != test.path || fingerprint.CanonicalQuery != test.query {
+			t.Fatalf("NewFingerprint(%q) = path %q query %q, want path %q query %q", test.requestPath, fingerprint.NormalizedPath, fingerprint.CanonicalQuery, test.path, test.query)
+		}
+		if got, err := NormalizePath(test.requestPath); err != nil || got != test.path {
+			t.Fatalf("NormalizePath(%q) = %q, %v; want %q", test.requestPath, got, err, test.path)
+		}
 	}
 }
 

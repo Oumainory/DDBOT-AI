@@ -111,7 +111,7 @@ func normalizeRequestPath(requestPath string) (string, string, error) {
 	if u.RawQuery == "" {
 		return cleanPath, "", nil
 	}
-	return cleanPath + "?" + u.RawQuery, u.RawQuery, nil
+	return cleanPath, u.RawQuery, nil
 }
 
 // CanonicalBody compacts JSON command bodies and lets encoding/json sort map
@@ -148,18 +148,8 @@ func CanonicalBody(body []byte) ([]byte, error) {
 func (f Fingerprint) Equal(other Fingerprint) bool {
 	return f.Method == other.Method &&
 		f.NormalizedPath == other.NormalizedPath &&
-		f.effectiveCanonicalQuery() == other.effectiveCanonicalQuery() &&
+		f.CanonicalQuery == other.CanonicalQuery &&
 		f.BodySHA256 == other.BodySHA256
-}
-
-func (f Fingerprint) effectiveCanonicalQuery() string {
-	if f.CanonicalQuery != "" {
-		return f.CanonicalQuery
-	}
-	if question := strings.IndexByte(f.NormalizedPath, '?'); question >= 0 {
-		return f.NormalizedPath[question+1:]
-	}
-	return ""
 }
 
 type Comparison uint8
