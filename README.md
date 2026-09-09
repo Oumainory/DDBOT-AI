@@ -6,15 +6,16 @@ DDBOT-AI 是一个面向个人、社群和机器人运营场景的多平台信�
 
 ## 当前状态
 
-仓库当前处于 Phase 0 / 基础契约阶段：
+仓库已完成并冻结 Phase 0 / 基础契约阶段，冻结点为 `phase0-baseline`（`2030834d423e8313df4ae7a937aec0f0badbd443`）。下一阶段是范围已锁定、尚未接入运行路径的 Phase 1 — Platform Foundation：
 
 - 已锁定上游基线提交 `a6364e7182ec4eee93dd78e09fe7a7efd92bffab`。
 - 已建立兼容性特征清单，覆盖命令、过滤、模板、OneBot 离线队列、多分片和 Bilibili/Twitter 典型事件。
 - 已建立三目标 `CGO_ENABLED=0` CI 门禁：Linux amd64、Linux arm64、Windows amd64。
 - 已建立事件/分类词表、字段级策略继承、Fail-open 决策和 ClassifierRelease 指纹契约。
 - FFmpeg 统一通过独立可执行文件调用，主程序不链接 FFmpeg 库。
+- Phase 0 已标记为 `DONE / FROZEN`；Phase 1 的范围和验收契约见 [Phase 1 — Platform Foundation](./docs/phase1/README.md) 和 [Phase 1 验收契约](./docs/phase1/ACCEPTANCE.md)。
 
-完整的实现顺序和验收条件见 [Phase 0 兼容性基线](./compat/README.md)、[V1 不变量](./docs/architecture/V1_INVARIANTS.md) 和 [发行门禁](./docs/architecture/PHASE0_RELEASE_GATES.md)。
+完整的 Phase 0 实现顺序和验收条件见 [Phase 0 兼容性基线](./compat/README.md)、[V1 不变量](./docs/architecture/V1_INVARIANTS.md) 和 [发行门禁](./docs/architecture/PHASE0_RELEASE_GATES.md)。
 
 ## 产品和制品命名
 
