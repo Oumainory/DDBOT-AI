@@ -38,8 +38,10 @@ applied_at
 每个 migration 在一个事务内执行。已经应用的版本必须同时匹配 name 和 checksum；修改已发布 SQL、未知版本、缺失历史或高于当前二进制的版本都会在任何 schema mutation 前拒绝启动，避免静默降级或重写既有数据。
 
 `001_core.sql` 已发布且 immutable，不能被重写或重新计算 checksum。P1A.1 新增
-`002_contracts.sql`，P1A.2 新增 `003_contract_guards.sql`；因此 fresh database 按
-`1 → 2 → 3` 创建 latest schema，已有 v1/v2 database 按缺失的有序 migration 升级。
+`002_contracts.sql`，P1A.2 新增 `003_contract_guards.sql`；P1B 新增 immutable
+`004_admin_auth.sql`。因此 fresh database 按 `1 → 2 → 3 → 4` 创建 latest schema，
+已有 v1/v2/v3 database 按缺失的有序 migration 升级；P1B 的 v3 → v4 认证 schema
+与启动 bootstrap 细节见 [P1B_ADMIN_AUTH.md](./P1B_ADMIN_AUTH.md)。
 
 ## Pre-migration backup gate
 
@@ -65,8 +67,8 @@ fresh empty database 不需要无意义的备份；已经是 latest schema 的 d
 目标不可创建或 `VACUUM INTO` 失败，都会返回 `ErrPreMigrationBackup`，且不会执行任何
 pending migration。备份失败时 live schema、原始数据和 `schema_migrations` 都保持不变。
 
-成功的 v1 → v3 gate 因此得到一个仍为 v1 的快照；v2 → v3 同理得到一个仍为 v2 的
-快照。只有 live database 在备份成功后才记录对应 migration。后续重新打开 latest v3
+成功的 v1 → v4 gate 因此得到一个仍为 v1 的快照；v2 → v4、v3 → v4 同理得到迁移前
+快照。只有 live database 在备份成功后才记录对应 migration。后续重新打开 latest v4
 不会再次产生 pre-migration backup。
 
 ## P1A.1 / P1A.2 schema closure
@@ -130,11 +132,11 @@ Probe.Readyz()   → GET /readyz
 
 当前实现的测试覆盖：
 
-- WAL、foreign keys、busy timeout 和 ordered migration version 1 → 2 → 3；
-- 001/002/003 immutable checksum、future/unknown/missing history 拒绝；
-- fresh/latest 不备份、v1 → v3 与 v2 → v3 的真实 migration 前快照、默认/显式目标和冲突保护；
+- WAL、foreign keys、busy timeout 和 ordered migration version 1 → 2 → 3 → 4；
+- 001/002/003/004 immutable checksum、future/unknown/missing history 拒绝；
+- fresh/latest 不备份、v1 → v4、v2 → v4 与 v3 → v4 的真实 migration 前快照、默认/显式目标和冲突保护；
 - backup failure 阻止所有 schema mutation，002 失败时事务整体回滚；
-- 重启后的幂等 migration，且 latest v3 database 不重复创建 pre-migration backup；
+- 重启后的幂等 migration，且 latest v4 database 不重复创建 pre-migration backup；
 - v3 route decision INSERT/UPDATE trigger、legacy NULL hold 保留和非相关字段更新；
 - request fingerprint 的 method/path/query/body 语义、显式 in-progress/completed、completed_at 和固定 7 天 expiry；
 - `migration_held` 的 route decision identity 序列化、旧数据安全回填和 crash-style 独立恢复；

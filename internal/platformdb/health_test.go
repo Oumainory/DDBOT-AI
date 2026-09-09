@@ -75,6 +75,25 @@ func TestProbeSeparatesHealthFromReadinessWhenStoreFails(t *testing.T) {
 	}
 }
 
+func TestProbeWithAuthTreatsSetupRequiredAsReady(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "auth-health.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	probe := NewProbeWithAuth(store, nil)
+	health := probe.Health(ctx)
+	if health.Status != StatusHealthy || health.Checks["auth"].Code != "setup_required" {
+		t.Fatalf("health with setup required = %#v", health)
+	}
+	ready := probe.Ready(ctx)
+	if ready.Status != StatusReady || ready.HTTPStatus() != http.StatusOK || ready.Checks["auth"].Code != "setup_required" {
+		t.Fatalf("ready with setup required = %#v", ready)
+	}
+}
+
 func TestProbeRejectsUnsupportedMethods(t *testing.T) {
 	probe := NewProbe(nil, ErrDatabaseClosed)
 	recorder := httptest.NewRecorder()

@@ -1,9 +1,12 @@
 # Keep compatibility fixtures, Go sources, templates, and documentation
 # byte-stable across Windows and Linux checkouts. Golden comparison must not
 # depend on core.autocrlf or the developer's editor.
+.gitattributes text eol=lf
 * text=auto
 
 *.go        text eol=lf
+go.mod      text eol=lf
+go.sum      text eol=lf
 *.json      text eol=lf
 *.yaml      text eol=lf
 *.yml       text eol=lf

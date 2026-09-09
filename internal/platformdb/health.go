@@ -51,10 +51,20 @@ func (r Report) HTTPStatus() int {
 type Probe struct {
 	store   *Store
 	initErr error
+	auth    *AuthRepository
 }
 
 func NewProbe(store *Store, initErr error) Probe {
 	return Probe{store: store, initErr: initErr}
+}
+
+// NewProbeWithAuth adds the P1B authentication state to readiness without
+// changing the liveness contract. Setup-required is a valid product state;
+// only an unavailable or inconsistent auth repository makes readiness fail.
+func NewProbeWithAuth(store *Store, initErr error) Probe {
+	probe := NewProbe(store, initErr)
+	probe.auth = NewAuthRepository(store)
+	return probe
 }
 
 func (p Probe) Health(ctx context.Context) Report {
@@ -75,6 +85,17 @@ func (p Probe) Health(ctx context.Context) Report {
 		return report
 	}
 	report.Checks["sqlite"] = Check{Status: CheckOK, Code: "sqlite_alive"}
+	if p.auth != nil {
+		state, err := p.auth.State(ctx)
+		if err != nil {
+			report.Status = StatusDegraded
+			report.Checks["auth"] = Check{Status: CheckDegraded, Code: "auth_unavailable"}
+		} else if state == AuthSetupRequired {
+			report.Checks["auth"] = Check{Status: CheckOK, Code: "setup_required"}
+		} else {
+			report.Checks["auth"] = Check{Status: CheckOK, Code: "auth_ready"}
+		}
+	}
 	return report
 }
 
@@ -105,6 +126,17 @@ func (p Probe) Ready(ctx context.Context) Report {
 		return notReady(report, "schema", "schema_version_mismatch")
 	}
 	report.Checks["schema"] = Check{Status: CheckOK, Code: "schema_current"}
+	if p.auth != nil {
+		state, err := p.auth.State(ctx)
+		if err != nil {
+			return notReady(report, "auth", "auth_unavailable")
+		}
+		if state == AuthSetupRequired {
+			report.Checks["auth"] = Check{Status: CheckOK, Code: "setup_required"}
+		} else {
+			report.Checks["auth"] = Check{Status: CheckOK, Code: "auth_ready"}
+		}
+	}
 	return report
 }
 

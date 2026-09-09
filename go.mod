@@ -53,6 +53,7 @@ require (
 	github.com/tidwall/buntdb v1.3.2
 	github.com/tidwall/gjson v1.18.0
 	go.uber.org/atomic v1.11.0
+	golang.org/x/crypto v0.42.0
 	golang.org/x/sync v0.17.0
 	google.golang.org/protobuf v1.33.0
 	modernc.org/sqlite v1.39.1
@@ -112,7 +113,6 @@ require (
 	github.com/tidwall/tinyqueue v0.1.1 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	golang.org/x/arch v0.3.0 // indirect
-	golang.org/x/crypto v0.42.0 // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
 	golang.org/x/sys v0.36.0 // indirect
 	golang.org/x/text v0.29.0

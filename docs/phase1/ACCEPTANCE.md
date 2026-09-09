@@ -1,6 +1,9 @@
 # Phase 1 验收契约
 
-本文件定义 **DDBOT-AI Phase 1 — Platform Foundation** 的完成门槛。文档描述的是必须达到的状态，不代表当前分支已经完成实现。除本文件外，Phase 0 的兼容性 Fixture、语义 diff 和三目标纯 Go 构建门禁仍然有效。
+本文件定义 **DDBOT-AI Phase 1 — Platform Foundation** 的总完成门槛。P1A SQLite
+Foundation 与 P1B Admin Bootstrap/Auth 已分别冻结；P1C 及之后的 Secret Store、API
+完整骨架和 Dashboard 仍需独立实现。除本文件外，Phase 0 的兼容性 Fixture、语义 diff
+和三目标纯 Go 构建门禁仍然有效。
 
 ## 1. AI OFF 兼容性保持 21/21
 

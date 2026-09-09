@@ -129,7 +129,7 @@ func Run() {
 	// 初始化 Modules
 	bot.StartService()
 
-	_, _ = admin.Start(&bot.Instance.Online, nil)
+	_, _ = admin.StartWithPlatform(&bot.Instance.Online, nil, admin.PlatformConfig{})
 
 	// 刷新好友列表，群列表
 	//以后刷新

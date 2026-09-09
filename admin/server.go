@@ -1,17 +1,25 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Sora233/MiraiGo-Template/config"
 	"github.com/cnxysoft/DDBOT-WSa/adapter"
+	"github.com/cnxysoft/DDBOT-WSa/internal/adminauth"
+	"github.com/cnxysoft/DDBOT-WSa/internal/auth"
+	"github.com/cnxysoft/DDBOT-WSa/internal/origin"
+	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
 	"github.com/cnxysoft/DDBOT-WSa/internal/runtimeconfig"
+	"github.com/cnxysoft/DDBOT-WSa/internal/session"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
@@ -137,8 +145,22 @@ type Server struct {
 	addr  string
 	token string
 
-	startedAt time.Time
-	online    *atomic.Bool
+	startedAt     time.Time
+	online        *atomic.Bool
+	httpServer    *http.Server
+	platformStore *platformdb.Store
+}
+
+// PlatformConfig controls the opt-in P1B platform foundation mounted next to
+// the legacy /api/v1 server. Zero values deliberately resolve from the safe
+// native defaults and environment variables, so legacy callers can keep using
+// Start without changing their behavior.
+type PlatformConfig struct {
+	DatabasePath  string
+	RuntimeMode   runtimeconfig.RuntimeMode
+	Origin        origin.Policy
+	RequireOrigin bool
+	Cookie        session.CookiePolicy
 }
 
 type SubSummary struct {
@@ -158,15 +180,44 @@ type Health struct {
 }
 
 func Start(online *atomic.Bool, alive *atomic.Bool) (*Server, error) {
+	return start(online, alive, nil)
+}
+
+// StartWithPlatform starts the legacy admin server and the narrow P1B auth /
+// health surface. Platform initialization is intentionally fail-open for the
+// Legacy Core: an unavailable platform database is reported by health/readiness
+// and leaves /api/v1 running.
+func StartWithPlatform(online *atomic.Bool, alive *atomic.Bool, platform PlatformConfig) (*Server, error) {
+	return start(online, alive, &platform)
+}
+
+func start(online *atomic.Bool, alive *atomic.Bool, platform *PlatformConfig) (*Server, error) {
 	enable := config.GlobalConfig.GetBool("admin.enable")
 	if !enable {
 		return nil, nil
+	}
+	if platform != nil {
+		resolved := resolvePlatformConfig(*platform)
+		platform = &resolved
 	}
 	addrConfig := config.GlobalConfig.GetString("admin.addr")
 	if envAddr := strings.TrimSpace(os.Getenv("DDBOT_AI_HTTP_LISTEN")); envAddr != "" {
 		addrConfig = envAddr
 	}
-	addr, err := runtimeconfig.HTTPListen(runtimeconfig.ModeNative, addrConfig)
+	runtimeMode := runtimeconfig.ModeNative
+	if platform != nil {
+		runtimeMode = platform.RuntimeMode
+		if runtimeMode == "" {
+			runtimeMode = runtimeconfig.ModeNative
+		}
+		// The container image supplies DDBOT_AI_HTTP_LISTEN explicitly. When a
+		// caller opts into Docker mode without that override, use the container
+		// default instead of accidentally binding the host-loopback config value.
+		if runtimeMode == runtimeconfig.ModeDocker && strings.TrimSpace(os.Getenv("DDBOT_AI_HTTP_LISTEN")) == "" {
+			addrConfig = ""
+		}
+	}
+	addr, err := runtimeconfig.HTTPListen(runtimeMode, addrConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -175,6 +226,24 @@ func Start(online *atomic.Bool, alive *atomic.Bool) (*Server, error) {
 	s := &Server{addr: addr, token: token, startedAt: time.Now(), online: online}
 
 	mux := http.NewServeMux()
+	if platform != nil {
+		platformHTTP, store, err := newPlatformHTTP(*platform)
+		if err != nil {
+			return nil, err
+		}
+		s.platformStore = store
+		mux.Handle("/api/v2/", platformHTTP.handler)
+		mux.Handle("/healthz", platformHTTP.probe.Healthz())
+		mux.Handle("/readyz", platformHTTP.probe.Readyz())
+		if platformHTTP.bootstrap.Created {
+			// This is the only raw setup-token output boundary. Do not route it
+			// through logrus, API responses, health, or error envelopes.
+			fmt.Printf("DDBOT-AI setup token: %s (expires %s)\n", platformHTTP.bootstrap.Token, platformHTTP.bootstrap.ExpiresAt.UTC().Format(time.RFC3339))
+		}
+		if platformHTTP.bootstrapErr != nil {
+			logrus.WithError(platformHTTP.bootstrapErr).Warn("DDBOT-AI admin bootstrap is unavailable")
+		}
+	}
 	// 基础 API
 	mux.HandleFunc("/api/v1/health", s.withAuth(s.handleHealth))
 	mux.HandleFunc("/api/v1/onebot/status", s.withAuth(s.handleOneBotStatus))
@@ -212,10 +281,115 @@ func Start(online *atomic.Bool, alive *atomic.Bool) (*Server, error) {
 	mux.HandleFunc("/api/debug/", s.serveApiDebuggerAssets)
 
 	server := &http.Server{Addr: addr, Handler: mux}
+	s.httpServer = server
 	go func() {
 		_ = server.ListenAndServe()
 	}()
 	return s, nil
+}
+
+type platformHTTP struct {
+	handler      http.Handler
+	probe        platformdb.Probe
+	bootstrap    auth.BootstrapResult
+	bootstrapErr error
+}
+
+func newPlatformHTTP(platform PlatformConfig) (platformHTTP, *platformdb.Store, error) {
+	databasePath := strings.TrimSpace(platform.DatabasePath)
+	if databasePath == "" {
+		databasePath = strings.TrimSpace(os.Getenv("DDBOT_AI_PLATFORM_DB"))
+	}
+	if databasePath == "" {
+		databasePath = "ddbot-ai.sqlite"
+	}
+	store, openErr := platformdb.Open(context.Background(), platformdb.Config{Path: databasePath})
+	probe := platformdb.NewProbeWithAuth(store, openErr)
+	var repository *platformdb.AuthRepository
+	if store != nil {
+		repository = platformdb.NewAuthRepository(store)
+	}
+	authService := auth.NewService(repository, auth.Config{})
+	authServer, err := adminauth.NewServer(adminauth.Config{
+		Auth:          authService,
+		Probe:         &probe,
+		Origin:        platform.Origin,
+		RequireOrigin: platform.RequireOrigin,
+		Cookie:        platform.Cookie,
+	})
+	if err != nil {
+		if store != nil {
+			_ = store.Close()
+		}
+		return platformHTTP{}, nil, err
+	}
+	result, bootstrapErr := authServer.Bootstrap(context.Background())
+	if openErr != nil {
+		// Keep the detailed owner error in the process log boundary while the
+		// probe and HTTP error envelope expose only stable non-sensitive codes.
+		bootstrapErr = openErr
+	} else if bootstrapErr != nil {
+		// Bootstrap errors are represented by the stable auth error in the
+		// endpoint layer; detailed database state remains out of health JSON.
+		bootstrapErr = auth.ErrUnavailable
+	}
+	return platformHTTP{
+		handler:      authServer.Handler(),
+		probe:        probe,
+		bootstrap:    result,
+		bootstrapErr: bootstrapErr,
+	}, store, nil
+}
+
+func resolvePlatformConfig(platform PlatformConfig) PlatformConfig {
+	if platform.RuntimeMode == "" {
+		if configured := strings.TrimSpace(os.Getenv("DDBOT_AI_RUNTIME_MODE")); configured != "" {
+			platform.RuntimeMode = runtimeconfig.RuntimeMode(configured)
+		}
+	}
+	if strings.TrimSpace(platform.Origin.AllowedOrigin) == "" {
+		platform.Origin.AllowedOrigin = strings.TrimSpace(os.Getenv("DDBOT_AI_ALLOWED_ORIGIN"))
+	}
+	if !platform.Origin.TrustForwarded {
+		platform.Origin.TrustForwarded = envBool("DDBOT_AI_TRUST_FORWARDED")
+	}
+	if !platform.RequireOrigin {
+		platform.RequireOrigin = envBool("DDBOT_AI_REQUIRE_ORIGIN")
+	}
+	if !platform.Cookie.Secure {
+		platform.Cookie.Secure = envBool("DDBOT_AI_COOKIE_SECURE")
+	}
+	return platform
+}
+
+func envBool(name string) bool {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return false
+	}
+	parsed, err := strconv.ParseBool(value)
+	return err == nil && parsed
+}
+
+// Close is primarily useful to embedders and tests. It never changes the
+// legacy subscription store; it only shuts down this HTTP listener and the
+// optional platform owner created by StartWithPlatform.
+func (s *Server) Close() error {
+	if s == nil {
+		return nil
+	}
+	var firstErr error
+	if s.httpServer != nil {
+		if err := s.httpServer.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			firstErr = err
+		}
+	}
+	if s.platformStore != nil {
+		if err := s.platformStore.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
