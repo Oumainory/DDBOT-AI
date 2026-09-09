@@ -1,104 +1,57 @@
-<div align="center">
+# DDBOT-AI
 
-# DDBOT-WSa
+DDBOT-AI 是一个面向个人、社群和机器人运营场景的多平台信息监控、语义筛选与推送管理中心。
 
-[![Release](https://img.shields.io/github/release/cnxysoft/DDBOT-WSa?style=flat-square&include_prereleases)](https://github.com/cnxysoft/DDBOT-WSa/releases)
-[![Downloads](https://img.shields.io/github/downloads/cnxysoft/DDBOT-WSa/total?style=flat-square&color=%239F7AEA&logo=github)](https://github.com/cnxysoft/DDBOT-WSa/releases)
-[![Stars](https://img.shields.io/github/stars/cnxysoft/DDBOT-WSa?style=flat-square)](https://github.com/cnxysoft/DDBOT-WSa/stargazers)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/cnxysoft/DDBOT-WSa?style=flat-square&logo=go)](https://go.dev/)
-[![GoDoc](https://img.shields.io/badge/go-documentation-blue?style=flat-square&logo=go)](https://pkg.go.dev/github.com/cnxysoft/DDBOT-WSa)
-[![License](https://img.shields.io/github/license/cnxysoft/DDBOT-WSa?style=flat-square)](./LICENSE)
-[![Docs](https://img.shields.io/badge/docs-kizunerwe.github.io-blue?style=flat-square)](https://kizunerwe.github.io/DDBOT-WSa-docs/)
+它以锁定的 DDBOT-WSa `next-dev` 提交为采集和传统推送基线，逐步增加统一 Event、程序规则、可插拔语义分类、订阅策略、Connector 和 Dashboard。传统程序负责可靠采集、去重、模板、媒体和投递；AI 只负责理解内容并减少噪声，任何 AI 或新模块故障都必须 Fail-open，不能让原有机器人失声。
 
----
+## 当前状态
 
-</div>
+仓库当前处于 Phase 0 / 基础契约阶段：
 
-> ⚠️ **风险须知**：您正在查看 **next-dev** 开发前沿分支，仅供测试，**请勿用于生产环境**。生产环境请使用 [master](https://github.com/cnxysoft/DDBOT-WSa) 稳定版。其他分支：[next](https://github.com/cnxysoft/DDBOT-WSa/tree/next)（更多功能）—— [详细对比](https://kizunerwe.github.io/DDBOT-WSa-docs/deploy/branches/)
+- 已锁定上游基线提交 `a6364e7182ec4eee93dd78e09fe7a7efd92bffab`。
+- 已建立兼容性特征清单，覆盖命令、过滤、模板、OneBot 离线队列、多分片和 Bilibili/Twitter 典型事件。
+- 已建立三目标 `CGO_ENABLED=0` CI 门禁：Linux amd64、Linux arm64、Windows amd64。
+- 已建立事件/分类词表、字段级策略继承、Fail-open 决策和 ClassifierRelease 指纹契约。
+- FFmpeg 统一通过独立可执行文件调用，主程序不链接 FFmpeg 库。
 
-DDBOT-WSa 是基于 DDBOT-ws 的修改版本，通过 WebSocket 连接 OneBot 11 兼容实现端，把 B 站、斗鱼、虎牙、ACFun、YouTube、微博、推特、抖音等平台的直播/动态更新推送到 IM 群。
+完整的实现顺序和验收条件见 [Phase 0 兼容性基线](./compat/README.md)、[V1 不变量](./docs/architecture/V1_INVARIANTS.md) 和 [发行门禁](./docs/architecture/PHASE0_RELEASE_GATES.md)。
 
-兼容 LLOneBot / NapCat / Lagrange / Lagrange PMHQ / go-cqhttp 等 OneBot 11 实现端。
+## 产品和制品命名
 
-> DDBOT **不是聊天机器人**。它只在「订阅对象有更新」和「答复命令」时主动发言，交互被刻意设计成最小程度，正常聊天永远不会误触。
+| 项目 | 名称 |
+| --- | --- |
+| 产品 | DDBOT-AI |
+| 仓库 | DDBOT-AI |
+| 二进制 | `ddbot-ai` |
+| 服务 | `ddbot-ai` |
+| Docker 服务/镜像 | `ddbot-ai` |
+| Dashboard | DDBOT-AI |
 
-**选择版本：**
+开发期为了最小化上游改动，Go module 仍暂时使用
+`github.com/cnxysoft/DDBOT-WSa`；正式公开发行前会在最终仓库地址确定后统一迁移 Module、import 和构建元数据。
 
-- [master](https://github.com/cnxysoft/DDBOT-WSa) — 稳定版
-- [next](https://github.com/cnxysoft/DDBOT-WSa/tree/next) — 更多功能（微博 API 模式、ACFUN 动态、推特 API 模式）
-- [next-dev](https://github.com/cnxysoft/DDBOT-WSa/tree/next-dev) — 开发前沿（小红书、Twitch、小黑盒、Telegram 推送）
+## 本地构建
 
-[📊 详细对比 →](https://kizunerwe.github.io/DDBOT-WSa-docs/deploy/branches/)
+主程序使用纯 Go 构建，媒体能力通过 PATH 或显式配置路径调用独立 FFmpeg：
 
-## 特性
-
-- **多平台订阅推送**：B 站（直播/动态）、斗鱼、虎牙、ACFun、YouTube、微博、TwitCasting、推特、抖音
-- **精细推送控制**：按关键字/动态类型过滤、@全体成员或指定人、下播/标题变更提醒、防刷屏去重
-- **模板系统**：基于 `text/template` 自定义所有推送/命令/事件格式，支持自定义命令和定时消息
-- **权限管理**：命令启用/禁用、单用户命令权限、角色权限
-- **插件扩展**：实现 `Concern` 接口即可接入任意订阅源，框架负责轮询、去重、限流、持久化
-
-## 快速开始
-
-```bash
-# 1. 下载对应平台的预编译版本
-#    https://github.com/cnxysoft/DDBOT-WSa/releases
-
-# 2. 首次运行（自动生成 device.json 和 application.yaml）
-./DDBOT
-
-# 3. 让 OneBot 实现端反向连接到 DDBOT
-#    ws://127.0.0.1:15630/ws
-
-# 4. 私聊 BOT 发送 /whosyourdaddy 设置管理员
-
-# 5. 群内发送 /watch <UID> 订阅，开播后自动推送
+```sh
+CGO_ENABLED=0 go build -trimpath -o ddbot-ai ./cmd
 ```
 
-首次启动会生成默认配置（模板已启用），并显示 B 站扫码二维码，用 B 站 App 扫描登录即可开始订阅。不配 B 站账号时订阅数建议不超过 5 个。
+也可以使用 Make：
 
-## 从纯血 DDBOT 迁移
+```sh
+make build
+```
 
-打开 `.lsp.db`，将 `ae` 字段全部替换为 `ex`，重启即可。详见 [迁移指南](https://kizunerwe.github.io/DDBOT-WSa-docs/deploy/connect/migrate/)。
+原生运行时 HTTP 服务默认监听 `127.0.0.1:15631`。Docker 运行时由镜像显式设置为 `0.0.0.0:15631`，供同一容器网络中的反向代理访问；宿主机端口必须使用 loopback 映射或完全不发布。详见 [Docker 监听契约](./docs/deployment/DOCKER_LISTENING.md)。
 
-## 注意事项
+## 兼容性门禁
 
-- BOT 只在群聊内工作，命令可私聊使用以避免刷屏
-- 建议密码设置足够强，不建议把 BOT 设为 QQ 群管理员
-- BOT 账号可人工登录，注意个人隐私
-- 使用 [buntdb](https://github.com/tidwall/buntdb) 作为嵌入式数据库，文件 `.lsp.db`，删除即恢复出厂设置；可用 [buntdb-cli](https://github.com/Sora233/buntdb-cli) 维护，但不要在 BOT 运行时使用
+新增 Observation、AI、Dashboard 或 Connector Hook 时，AI Mode 为 OFF 且系统不处于明确维护/迁移状态的行为必须与锁定基线一致。门禁比较命令回复、BuntDB 状态、过滤结果、消息段内容和顺序、队列状态、分片行为及典型平台事件输出。
 
-## 文档
+任何有意改变 Legacy 行为的提交都必须同时更新规格、验收条件和经过审核的 Fixture；不能因为接入新模块而静默改变传统推送。
 
-📖 **[完整文档](https://kizunerwe.github.io/DDBOT-WSa-docs/)**
+## 许可证和来源
 
-| 链接 | 说明 |
-|------|------|
-| [快速开始](https://kizunerwe.github.io/DDBOT-WSa-docs/quickstart/) | 下载运行 → 连接 OneBot → 完成第一次订阅 |
-| [部署与连接](https://kizunerwe.github.io/DDBOT-WSa-docs/deploy/intro/) | 安装、首次配置、对接 LLBot/NapCat/Lagrange，媒体与 FFmpeg，从纯血迁移 |
-| [命令手册](https://kizunerwe.github.io/DDBOT-WSa-docs/commands/) | 所有命令速查与详解（watch / config / grant / silence 等） |
-| [配置参考](https://kizunerwe.github.io/DDBOT-WSa-docs/config/) | application.yaml 全字段说明（B 站、推特、抖音、代理、模板开关等） |
-| [模板系统](https://kizunerwe.github.io/DDBOT-WSa-docs/template/) | 自定义推送/命令/事件格式，全部模板函数，定时消息 |
-| [常见问题](https://kizunerwe.github.io/DDBOT-WSa-docs/faq/) | 部署排障、风控、WebSocket 连接等高频问题 |
-
-订阅源详情、插件开发、版本与分支等见文档站完整导航。
-
-## 交流与反馈
-
-- **Issues**：<https://github.com/cnxysoft/DDBOT-WSa/issues>
-- **交流群**：980848391（755612788 已满）
-- **B 站专栏**：<https://www.bilibili.com/read/cv10602230>
-
-## 致谢
-
-DDBOT-WSa 基于 [Sora233/DDBOT](https://github.com/Sora233/DDBOT) 与 [Hoshinonyaruko/DDBOT-ws](https://github.com/Hoshinonyaruko/DDBOT-ws) 演进而来，感谢所有贡献者。
-
-<div align="center">
-
-![Contributors](https://contrib.rocks/image?repo=cnxysoft/DDBOT-WSa)
-
-</div>
-
-## License
-
-本项目基于 [AGPL-3.0](./LICENSE) 协议开源。使用了 DDBOT 源代码或对其进行修改的项目，须以相同协议开源并标明著作权。
+DDBOT-AI 使用 AGPL-3.0。上游 DDBOT-WSa、DDBOT-ws、DDBOT 及第三方依赖的版权和许可证信息继续保留在源码及发行 Notices 中。

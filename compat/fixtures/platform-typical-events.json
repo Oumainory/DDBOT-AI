@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "id": "platform-typical-events",
+  "baseline_commit": "a6364e7182ec4eee93dd78e09fe7a7efd92bffab",
+  "scenario": {
+    "events": [
+      {"platform": "bilibili", "event_type": "dynamic", "source": "401742377"},
+      {"platform": "bilibili", "event_type": "submission", "source": "401742377"},
+      {"platform": "twitter", "event_type": "tweet", "source": "GenshinImpact", "repost": false},
+      {"platform": "twitter", "event_type": "tweet", "source": "GenshinImpact", "repost": true}
+    ]
+  },
+  "expected": {
+    "event_to_message_mapping_is_stable": true,
+    "bilibili_dynamic_and_submission_are_distinguishable": true,
+    "twitter_original_and_repost_are_distinguishable": true,
+    "source_and_target_identity_are_preserved": true
+  },
+  "normalize": ["timestamps", "random_request_ids", "temporary_media_paths"]
+}

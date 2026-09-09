@@ -1,16 +1,13 @@
 /.idea
-DDBOT
+/ddbot-ai
 /.coverage.out
 /coverage.html
 /qrcode.png
 /dist/
 /version*.json
 /debug
-ddbot.exe
-/ffmpeg/ffmpeg-static/
-
-# Build output
-/DDBOT-cgo
+/ddbot-ai.exe
+/runtime/ffmpeg/
 
 # Test binaries
 *.test
@@ -18,7 +15,6 @@ ddbot.exe
 
 # Node packages
 node_modules/
-package*.json
 
 # Agent framework
 .sisyphus/

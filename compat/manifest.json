@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "product": "DDBOT-AI",
+  "baseline_repository": "https://github.com/cnxysoft/DDBOT-WSa",
+  "baseline_commit": "a6364e7182ec4eee93dd78e09fe7a7efd92bffab",
+  "fixtures": [
+    {
+      "id": "commands-watch-unwatch",
+      "category": "legacy-command",
+      "fixture_file": "fixtures/commands-watch-unwatch.json",
+      "existing_tests": [
+        "lsp/TestIWatch",
+        "lsp/TestIConfigFilterCmd"
+      ],
+      "observables": [
+        "command reply",
+        "BuntDB subscription state",
+        "duplicate and missing subscription behavior"
+      ]
+    },
+    {
+      "id": "deterministic-filter-hooks",
+      "category": "filter-hook",
+      "fixture_file": "fixtures/deterministic-filter-hooks.json",
+      "existing_tests": [
+        "lsp/concern/TestGroupConcernConfig_FilterHook",
+        "lsp/bilibili/TestGroupConcernConfig_NewsFilterHook",
+        "lsp/twitter/TestGroupConcernConfigFilterHookUsesTextRules"
+      ],
+      "observables": [
+        "text/not_text result",
+        "type/not_type result",
+        "filter reason",
+        "no-send outcome"
+      ]
+    },
+    {
+      "id": "template-rendering",
+      "category": "template",
+      "fixture_file": "fixtures/template-rendering.json",
+      "existing_tests": [
+        "lsp/template/TestLoadTemplate",
+        "lsp/template/TestTemplate",
+        "lsp/bilibili/TestCompactMissTemplateSuppressesCommonFooter",
+        "lsp/twitter/TestToMessage_ErrorHandling"
+      ],
+      "observables": [
+        "message element order",
+        "template fallback",
+        "rendered text and media references"
+      ]
+    },
+    {
+      "id": "onebot-offline-queue",
+      "category": "delivery-queue",
+      "fixture_file": "fixtures/onebot-offline-queue.json",
+      "existing_tests": [
+        "adapter/TestOfflineQueue_SaveAndLoad",
+        "adapter/TestOfflineQueue_FlushDropsTimedOutMessages",
+        "adapter/TestOfflineQueue_DoesNotRetryUnknownResultAfterDisconnect",
+        "adapter/TestOfflineQueue_MaxSizeDropsOnlyOldest"
+      ],
+      "observables": [
+        "queued state",
+        "flush order",
+        "expiry",
+        "unknown is not retried"
+      ]
+    },
+    {
+      "id": "message-chunking",
+      "category": "delivery-chunking",
+      "fixture_file": "fixtures/message-chunking.json",
+      "existing_tests": [
+        "adapter/TestBuildMessageChunks_PlainText",
+        "adapter/TestBuildMessageChunks_MixedContent",
+        "adapter/TestSendGroupMessage_StopsAfterFirstFailedChunk",
+        "adapter/TestSendGroupMessage_DoesNotRequeueSuccessfulChunks"
+      ],
+      "observables": [
+        "chunk order",
+        "media and text grouping",
+        "partial failure behavior"
+      ]
+    },
+    {
+      "id": "platform-typical-events",
+      "category": "platform-event",
+      "fixture_file": "fixtures/platform-typical-events.json",
+      "existing_tests": [
+        "lsp/bilibili/TestConcern_GroupWatchNotify",
+        "lsp/bilibili/TestGroupConcernConfig_NewsFilterHook",
+        "lsp/twitter/TestTwitterConcern_GetTweets",
+        "lsp/twitter/TestGroupConcernConfigFilterHookUsesDynamicTwitterText"
+      ],
+      "observables": [
+        "Bilibili dynamic and submission output",
+        "Twitter original and retweet output",
+        "event-to-message mapping"
+      ]
+    }
+  ]
+}

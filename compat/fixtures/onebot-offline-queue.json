@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "onebot-offline-queue",
+  "baseline_commit": "a6364e7182ec4eee93dd78e09fe7a7efd92bffab",
+  "scenario": {
+    "messages": [
+      {"target": "group:123456789", "text": "queued-1"},
+      {"target": "group:123456789", "text": "queued-2"}
+    ],
+    "events": ["bot_offline", "bot_online", "send_timeout"]
+  },
+  "expected": {
+    "offline_messages_are_queued": true,
+    "flush_order_is_fifo": true,
+    "expired_messages_are_dropped": true,
+    "unknown_delivery_is_never_automatically_retried": true
+  },
+  "normalize": ["timestamps", "random_request_ids", "onebot_message_ids"]
+}

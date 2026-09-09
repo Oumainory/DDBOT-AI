@@ -38,6 +38,8 @@ func main() {
 	kong.Parse(&cli)
 
 	if cli.Version {
+		fmt.Println("Product: DDBOT-AI")
+		fmt.Println("Binary: ddbot-ai")
 		fmt.Printf("Tags: %v\n", lsp.Tags)
 		fmt.Printf("COMMIT_ID: %v\n", lsp.CommitId)
 		fmt.Printf("BUILD_TIME: %v\n", lsp.BuildTime)
@@ -79,6 +81,7 @@ func main() {
 		return
 	}
 
+	fmt.Println("DDBOT-AI")
 	fmt.Println("DDBOT交流群：755612788（已满）、980848391")
 	fmt.Println("二次修改:https://github.com/Hoshinonyaruko/DDBOT-ws")
 	fmt.Println("三次修改:https://github.com/cnxysoft/DDBOT-WSa")

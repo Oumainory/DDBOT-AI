@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "message-chunking",
+  "baseline_commit": "a6364e7182ec4eee93dd78e09fe7a7efd92bffab",
+  "scenario": {
+    "message": {
+      "text": "long text fixture",
+      "images": 12,
+      "contains_video": true
+    }
+  },
+  "expected": {
+    "chunk_order_is_stable": true,
+    "media_limits_are_respected": true,
+    "failed_chunk_stops_following_chunks": true,
+    "successful_chunks_are_not_requeued": true
+  },
+  "normalize": ["timestamps", "random_request_ids", "onebot_message_ids"]
+}

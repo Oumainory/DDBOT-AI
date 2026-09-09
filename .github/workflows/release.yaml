@@ -1,33 +1,73 @@
-name: release
+name: DDBOT-AI Release
 
 on:
   release:
-    types: [ created ]
+    types: [created]
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: '1.26.2'
 
 jobs:
-  releases-matrix:
-    name: Release Go Binary
+  build:
+    name: Build Lite (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        goos: [ linux, windows, darwin ]
-        goarch: [ "386", amd64, arm, arm64 ]
-        exclude:
-          - goos: darwin
-            goarch: arm
-          - goos: darwin
-            goarch: "386"
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
     steps:
-      - uses: actions/checkout@v3
-      - name: Set env
-        run: |
-          echo BUILD_TIME=$(date --rfc-3339=seconds) >> ${GITHUB_ENV}
-          echo Tags=${GITHUB_REF##*/} >> ${GITHUB_ENV}
-      - uses: wangyoucao577/go-release-action@v1.22
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          goos: ${{ matrix.goos }}
-          goarch: ${{ matrix.goarch }}
-          goversion: "https://go.dev/dl/go1.20.2.linux-amd64.tar.gz"
-          ldflags: -w -s -X "github.com/cnxysoft/DDBOT-WSa/lsp.BuildTime=${{ env.BUILD_TIME }}" -X github.com/cnxysoft/DDBOT-WSa/lsp.CommitId=${{ github.sha }} -X github.com/cnxysoft/DDBOT-WSa/lsp.Tags=${{ env.Tags }}
-          project_path: "./cmd"
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build with CGO disabled
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p dist
+          suffix=""
+          if [ "$GOOS" = "windows" ]; then suffix=".exe"; fi
+          go build -trimpath -ldflags "-s -w -X github.com/cnxysoft/DDBOT-WSa/lsp.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ) -X github.com/cnxysoft/DDBOT-WSa/lsp.CommitId=${GITHUB_SHA}" -o "dist/ddbot-ai${suffix}" ./cmd
+          cd dist
+          zip -q "../ddbot-ai-${GOOS}-${GOARCH}-lite.zip" "ddbot-ai${suffix}"
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: ddbot-ai-${{ matrix.goos }}-${{ matrix.goarch }}-lite
+          path: ddbot-ai-${{ matrix.goos }}-${{ matrix.goarch }}-lite.zip
+
+  publish:
+    name: Publish release assets
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ddbot-ai-*-lite
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: release-assets/*.zip
+          generate_release_notes: true

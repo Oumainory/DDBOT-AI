@@ -11,6 +11,7 @@ import (
 
 	"github.com/Sora233/MiraiGo-Template/config"
 	"github.com/cnxysoft/DDBOT-WSa/adapter"
+	"github.com/cnxysoft/DDBOT-WSa/internal/runtimeconfig"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
@@ -32,7 +33,9 @@ func (m *mockMsgCtx) Send(msg *mmsg.MSG) interface{}    { return nil }
 func (m *mockMsgCtx) NoPermissionReply() interface{}    { return nil }
 func (m *mockMsgCtx) GetLog() *logrus.Entry             { return logrus.NewEntry(logrus.StandardLogger()) }
 func (m *mockMsgCtx) GetTarget() mmsg.Target            { return mmsg.NewGroupTarget(m.groupCode) }
-func (m *mockMsgCtx) GetSender() *adapter.SenderInfo    { return &adapter.SenderInfo{UserID: 10000, Uin: 10000} }
+func (m *mockMsgCtx) GetSender() *adapter.SenderInfo {
+	return &adapter.SenderInfo{UserID: 10000, Uin: 10000}
+}
 
 type AddSubRequest struct {
 	Site      string      `json:"site"`
@@ -159,9 +162,13 @@ func Start(online *atomic.Bool, alive *atomic.Bool) (*Server, error) {
 	if !enable {
 		return nil, nil
 	}
-	addr := config.GlobalConfig.GetString("admin.addr")
-	if addr == "" {
-		addr = "127.0.0.1:15631"
+	addrConfig := config.GlobalConfig.GetString("admin.addr")
+	if envAddr := strings.TrimSpace(os.Getenv("DDBOT_AI_HTTP_LISTEN")); envAddr != "" {
+		addrConfig = envAddr
+	}
+	addr, err := runtimeconfig.HTTPListen(runtimeconfig.ModeNative, addrConfig)
+	if err != nil {
+		return nil, err
 	}
 	token := config.GlobalConfig.GetString("admin.token")
 

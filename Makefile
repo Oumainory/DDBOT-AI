@@ -6,14 +6,14 @@ LDFLAGS = -X "github.com/cnxysoft/DDBOT-WSa/lsp.BuildTime='"$(BUILD_TIME)"'" -X 
 SRC := $(shell find . -type f -name '*.go') lsp/template/default/*
 PROTO := $(shell find . -type f -name '*.proto')
 COV := .coverage.out
-TARGET := DDBOT
+TARGET := ddbot-ai
 
 $(COV): $(SRC)
-	go test ./... -coverprofile=$(COV)
+	CGO_ENABLED=0 go test ./... -coverprofile=$(COV)
 
 
 $(TARGET): $(SRC) go.mod go.sum
-	go build -pgo=auto -ldflags '$(LDFLAGS)' -o $(TARGET) github.com/cnxysoft/DDBOT-WSa/cmd
+	CGO_ENABLED=0 go build -pgo=auto -ldflags '$(LDFLAGS)' -o $(TARGET) github.com/cnxysoft/DDBOT-WSa/cmd
 
 build: $(TARGET)
 
