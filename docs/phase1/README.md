@@ -79,3 +79,5 @@ Phase 0 中已经存在的 `ClassifierRelease`、Policy、Migration Snapshot 等
 6. 三目标 `CGO_ENABLED=0` 构建门禁继续有效；FFmpeg 仍作为独立 runtime 进程调用。
 
 Phase 1 的逐条验收条件见 [ACCEPTANCE.md](./ACCEPTANCE.md)。
+
+当前实施切片为 [P1A — SQLite Foundation](./P1A_SQLITE_FOUNDATION.md)。

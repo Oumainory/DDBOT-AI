@@ -180,6 +180,13 @@ jobs:
           if [ "$GOOS" = "windows" ]; then suffix=".exe"; fi
           go build -trimpath -o "build/ddbot-ai-${GOOS}-${GOARCH}${suffix}" ./cmd
 
+      - name: Compile SQLite foundation without CGO
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -buildmode=archive -o "build/platformdb-${GOOS}-${GOARCH}.a" ./internal/platformdb
+
       - name: Verify build artifact exists
         shell: bash
         run: |
