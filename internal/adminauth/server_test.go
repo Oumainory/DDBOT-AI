@@ -196,6 +196,75 @@ func TestSetupRequiresOriginAndLoginRejectsBadOrigin(t *testing.T) {
 	}
 }
 
+func TestLoginAllowsMissingOriginByDefault(t *testing.T) {
+	server, bootstrap, cleanup := newAuthTestServer(t, false)
+	defer cleanup()
+	handler := server.Handler()
+	setup := makeJSONRequest(http.MethodPost, "http://admin.example.test/api/v2/setup", map[string]string{
+		"setup_token": bootstrap.Token,
+		"username":    "admin",
+		"password":    "correct horse battery staple",
+	})
+	setupRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(setupRecorder, setup)
+	if setupRecorder.Code != http.StatusCreated {
+		t.Fatalf("setup status = %d, body = %s", setupRecorder.Code, setupRecorder.Body.String())
+	}
+
+	login := makeJSONRequest(http.MethodPost, "http://admin.example.test/api/v2/auth/login", map[string]string{
+		"username": "admin",
+		"password": "correct horse battery staple",
+	})
+	login.Header.Del("Origin")
+	loginRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(loginRecorder, login)
+	if loginRecorder.Code != http.StatusOK {
+		t.Fatalf("login without origin status = %d, body = %s", loginRecorder.Code, loginRecorder.Body.String())
+	}
+}
+
+func TestSetupTokenErrorsUseStableExternalCode(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1700000000, 0).UTC()
+	store, err := platformdb.Open(ctx, platformdb.Config{Path: filepath.Join(t.TempDir(), "setup-errors.sqlite"), Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	service := auth.NewService(platformdb.NewAuthRepository(store), auth.Config{Now: func() time.Time { return now }})
+	server, err := NewServer(Config{Auth: service, Origin: origin.Policy{AllowedOrigin: testOrigin}, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := server.Bootstrap(ctx)
+	if err != nil || !bootstrap.Created {
+		t.Fatalf("Bootstrap = %#v, %v", bootstrap, err)
+	}
+
+	wrong := makeJSONRequest(http.MethodPost, "http://admin.example.test/api/v2/setup", map[string]string{
+		"setup_token": "wrong-token",
+		"username":    "admin",
+		"password":    "correct horse battery staple",
+	})
+	wrongRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(wrongRecorder, wrong)
+	if wrongRecorder.Code != http.StatusUnauthorized || !strings.Contains(wrongRecorder.Body.String(), "invalid_setup_token") || strings.Contains(wrongRecorder.Body.String(), "wrong-token") {
+		t.Fatalf("wrong setup token response = %d %s", wrongRecorder.Code, wrongRecorder.Body.String())
+	}
+
+	now = now.Add(auth.DefaultSetupTokenTTL + time.Second)
+	expired := makeJSONRequest(http.MethodPost, "http://admin.example.test/api/v2/setup", map[string]string{
+		"setup_token": bootstrap.Token,
+		"username":    "admin",
+		"password":    "correct horse battery staple",
+	})
+	expiredRecorder := httptest.NewRecorder()
+	server.Handler().ServeHTTP(expiredRecorder, expired)
+	if expiredRecorder.Code != http.StatusUnauthorized || !strings.Contains(expiredRecorder.Body.String(), "invalid_setup_token") || strings.Contains(expiredRecorder.Body.String(), bootstrap.Token) {
+		t.Fatalf("expired setup token response = %d %s", expiredRecorder.Code, expiredRecorder.Body.String())
+	}
+}
+
 func TestLoginRateLimitAndStableCredentialError(t *testing.T) {
 	server, bootstrap, cleanup := newAuthTestServer(t, false)
 	defer cleanup()

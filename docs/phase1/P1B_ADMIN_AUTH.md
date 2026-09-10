@@ -41,6 +41,33 @@ bootstrap stdout/container-console 边界输出，绝不会进入 API、health/r
 
 重复消费、过期 token、并发 setup、第二个管理员和伪造 Origin 都不会创建第二个管理员。
 
+### Setup cost guard
+
+Setup 的拒绝路径和昂贵密码派生严格分离，执行顺序固定为：
+
+```text
+廉价请求校验（服务可用、token 非空、用户名规范化、密码策略）
+        ↓
+SHA-256 Setup Token
+        ↓
+只读 setup state / administrator / token precheck
+        ↓  只有 precheck 成功才继续
+Argon2id(password)
+        ↓
+CreateAdministrator transaction 内的最终复核
+        ↓
+插入唯一管理员 + 消费 token + 永久完成 setup
+```
+
+Precheck 只读取当前 setup state、管理员数量和 Setup Token row，使用恒定时间比较，
+不消费 token、不创建管理员、不更新 setup state，也不是最终授权决定。它的作用是让
+错误、过期、已消费或已完成 setup 的请求不触发 Argon2id。Argon2id 完成后，事务仍会
+重新验证 setup 未完成、管理员数量为零、token 存在且未消费、未过期并且 hash 匹配；
+因此 precheck 与事务之间发生竞争时不会绕过 TOCTOU 保护。
+
+两个并发的有效请求可以都通过 precheck 并执行一次密码派生，但只有一个事务能够
+提交。最终只会创建一个管理员、消费一次 token，另一个请求稳定失败。
+
 ## Password 与 Login
 
 密码使用标准 Argon2id encoded hash：
@@ -50,8 +77,9 @@ $argon2id$v=19$m=65536,t=3,p=2$<random-salt>$<derived-key>
 ```
 
 参数集中定义在 `internal/auth/password.go`，每次 hash 使用新的随机 salt，验证使用
-constant-time compare。`POST /api/v2/auth/login` 不要求预先存在 CSRF Session；它只
-校验 Origin（Origin 存在时必须匹配配置）、使用 bounded failure rate limiter（默认
+constant-time compare。`POST /api/v2/auth/login` 不要求预先存在 CSRF Session；Origin
+存在时必须匹配配置，Origin 缺失时按默认部署策略接受（部署显式设置 `RequireOrigin`
+后才会要求存在）。它只使用 bounded failure rate limiter（默认
 每个 remote/username key 5 次 / 5 分钟，最多 4096 个 key），并对未知用户名、错误密码、
 禁用管理员返回相同的外部错误。
 
@@ -62,9 +90,10 @@ HTTP JSON 不回显 token；SQLite 只保存 SHA-256 hash。默认 Cookie 名为
 ## CSRF、Origin 与 Logout
 
 - Setup 是 Setup Token + 必需 Origin 的独立契约；
-- Login 不需要预先 CSRF；
+- Login 不需要预先 CSRF；Origin 存在时必须匹配，缺失时默认允许，除非部署显式要求；
 - Logout 是已认证 mutation，必须同时通过 Origin、有效 Session 和
   `X-CSRF-Token` constant-time 校验；
+- Origin header 不是身份认证机制，能够发起原始 HTTP 请求的客户端可以自行构造它；
 - `/api/v2/auth/session` 返回当前用户名、过期时间和 CSRF token，永不返回 Session
   原文；
 - Logout 先持久化 revoke，再发送清除 Cookie；无效/已撤销 Session 不会重新激活状态；

@@ -30,21 +30,29 @@ const (
 
 type Clock func() time.Time
 
+// PasswordHasher is the expensive password derivation boundary used during
+// setup. Production services use HashPassword; tests may inject a counting or
+// otherwise deterministic implementation without changing the Argon2id
+// policy itself.
+type PasswordHasher func(string) (string, error)
+
 type Config struct {
-	Now           Clock
-	Random        io.Reader
-	SetupTokenTTL time.Duration
-	SessionTTL    time.Duration
-	RateLimiter   *RateLimiter
+	Now            Clock
+	Random         io.Reader
+	SetupTokenTTL  time.Duration
+	SessionTTL     time.Duration
+	RateLimiter    *RateLimiter
+	PasswordHasher PasswordHasher
 }
 
 type Service struct {
-	repo          *platformdb.AuthRepository
-	now           Clock
-	random        io.Reader
-	setupTokenTTL time.Duration
-	sessionTTL    time.Duration
-	rateLimiter   *RateLimiter
+	repo           *platformdb.AuthRepository
+	now            Clock
+	random         io.Reader
+	setupTokenTTL  time.Duration
+	sessionTTL     time.Duration
+	rateLimiter    *RateLimiter
+	passwordHasher PasswordHasher
 }
 
 type BootstrapResult struct {
@@ -80,13 +88,17 @@ func NewService(repo *platformdb.AuthRepository, config Config) *Service {
 	if config.RateLimiter == nil {
 		config.RateLimiter = NewRateLimiter(RateLimiterConfig{Now: config.Now})
 	}
+	if config.PasswordHasher == nil {
+		config.PasswordHasher = HashPassword
+	}
 	return &Service{
-		repo:          repo,
-		now:           config.Now,
-		random:        config.Random,
-		setupTokenTTL: config.SetupTokenTTL,
-		sessionTTL:    config.SessionTTL,
-		rateLimiter:   config.RateLimiter,
+		repo:           repo,
+		now:            config.Now,
+		random:         config.Random,
+		setupTokenTTL:  config.SetupTokenTTL,
+		sessionTTL:     config.SessionTTL,
+		rateLimiter:    config.RateLimiter,
+		passwordHasher: config.PasswordHasher,
 	}
 }
 
@@ -131,11 +143,17 @@ func (s *Service) Setup(ctx context.Context, setupToken, username, password stri
 	if err != nil {
 		return SetupResult{}, err
 	}
-	passwordHash, err := HashPassword(password)
-	if err != nil {
+	if err := ValidatePassword(password); err != nil {
 		return SetupResult{}, err
 	}
 	tokenHash := hashSetupToken(setupToken)
+	if err := s.repo.ValidateSetupToken(ctx, tokenHash, s.now()); err != nil {
+		return SetupResult{}, err
+	}
+	passwordHash, err := s.passwordHasher(password)
+	if err != nil {
+		return SetupResult{}, err
+	}
 	adminID, err := randomIdentifier(s.random, "admin_")
 	if err != nil {
 		return SetupResult{}, fmt.Errorf("auth: generate administrator id: %w", err)

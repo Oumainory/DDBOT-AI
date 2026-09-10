@@ -100,6 +100,55 @@ func (r *AuthRepository) State(ctx context.Context) (AuthState, error) {
 	}
 }
 
+// ValidateSetupToken performs the cheap, read-only portion of setup
+// authorization. It intentionally does not claim or consume the token and is
+// never the final authority: CreateAdministrator repeats every relevant check
+// inside its transaction after password hashing completes.
+func (r *AuthRepository) ValidateSetupToken(ctx context.Context, tokenHash string, now time.Time) error {
+	if err := r.requireStore(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(tokenHash) == "" {
+		return ErrSetupTokenInvalid
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	state, err := r.State(ctx)
+	if err != nil {
+		return err
+	}
+	if state == AuthReady {
+		return ErrSetupComplete
+	}
+
+	var storedHash string
+	var expiresAt int64
+	var consumedAt sql.NullInt64
+	if err := r.store.db.QueryRowContext(ctx, `
+SELECT token_hash, expires_at, consumed_at
+FROM setup_tokens
+WHERE singleton = 1`).Scan(&storedHash, &expiresAt, &consumedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrSetupTokenMissing
+		}
+		return fmt.Errorf("platformdb: read setup token: %w", err)
+	}
+	if consumedAt.Valid {
+		return ErrSetupTokenConsumed
+	}
+	if expiresAt <= now.UTC().Unix() {
+		return ErrSetupTokenExpired
+	}
+	if subtle.ConstantTimeCompare([]byte(storedHash), []byte(tokenHash)) != 1 {
+		return ErrSetupTokenInvalid
+	}
+	return nil
+}
+
 // EnsureSetupToken creates or replaces the single bootstrap token row only
 // while setup is incomplete. It returns true when the supplied token was
 // persisted and therefore may be emitted through the dedicated bootstrap

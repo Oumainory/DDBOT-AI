@@ -60,6 +60,139 @@ func TestAuthRepositorySetupTokenIsHashedAndConsumedAtomically(t *testing.T) {
 	}
 }
 
+func TestAuthRepositoryValidateSetupTokenIsReadOnly(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "precheck.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	repository := NewAuthRepository(store)
+	now := time.Unix(1700000000, 0).UTC()
+	rawToken := "precheck-token"
+	tokenHash := session.HashToken(rawToken)
+	if created, err := repository.EnsureSetupToken(ctx, tokenHash, now, now.Add(time.Hour)); err != nil || !created {
+		t.Fatalf("EnsureSetupToken = %v, %v", created, err)
+	}
+	beforeState, err := repository.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeConsumed := rawInt(t, store.db, "SELECT COUNT(*) FROM setup_tokens WHERE singleton = 1 AND consumed_at IS NOT NULL")
+	if err := repository.ValidateSetupToken(ctx, tokenHash, now); err != nil {
+		t.Fatalf("valid precheck = %v", err)
+	}
+	afterState, err := repository.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterConsumed := rawInt(t, store.db, "SELECT COUNT(*) FROM setup_tokens WHERE singleton = 1 AND consumed_at IS NOT NULL")
+	if beforeState != afterState || beforeConsumed != afterConsumed || afterConsumed != 0 {
+		t.Fatalf("precheck mutated state: before=%q/%d after=%q/%d", beforeState, beforeConsumed, afterState, afterConsumed)
+	}
+
+	cases := []struct {
+		name string
+		hash string
+		at   time.Time
+		want error
+	}{
+		{name: "wrong token", hash: session.HashToken("wrong-token"), at: now, want: ErrSetupTokenInvalid},
+		{name: "expired token", hash: tokenHash, at: now.Add(time.Hour), want: ErrSetupTokenExpired},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := repository.ValidateSetupToken(ctx, tc.hash, tc.at); !errors.Is(err, tc.want) {
+				t.Fatalf("ValidateSetupToken = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestAuthRepositoryValidateSetupTokenStableStates(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1700000000, 0).UTC()
+
+	t.Run("missing token", func(t *testing.T) {
+		store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "missing.sqlite")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		if err := NewAuthRepository(store).ValidateSetupToken(ctx, session.HashToken("missing"), now); !errors.Is(err, ErrSetupTokenMissing) {
+			t.Fatalf("ValidateSetupToken = %v, want %v", err, ErrSetupTokenMissing)
+		}
+	})
+
+	t.Run("consumed token", func(t *testing.T) {
+		store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "consumed.sqlite")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		repository := NewAuthRepository(store)
+		hash := session.HashToken("consumed")
+		if _, err := repository.EnsureSetupToken(ctx, hash, now, now.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.ExecContext(ctx, "UPDATE setup_tokens SET consumed_at = ? WHERE singleton = 1", now.Unix()); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.ValidateSetupToken(ctx, hash, now); !errors.Is(err, ErrSetupTokenConsumed) {
+			t.Fatalf("ValidateSetupToken = %v, want %v", err, ErrSetupTokenConsumed)
+		}
+		if got := rawInt(t, store.db, "SELECT COUNT(*) FROM administrators"); got != 0 {
+			t.Fatalf("administrator count = %d, want 0", got)
+		}
+	})
+
+	t.Run("setup complete", func(t *testing.T) {
+		store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "complete.sqlite")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer store.Close()
+		repository := NewAuthRepository(store)
+		hash := session.HashToken("complete")
+		if _, err := repository.EnsureSetupToken(ctx, hash, now, now.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repository.CreateAdministrator(ctx, hash, "admin_1", "admin", testPasswordHash, now); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.ValidateSetupToken(ctx, hash, now); !errors.Is(err, ErrSetupComplete) {
+			t.Fatalf("ValidateSetupToken = %v, want %v", err, ErrSetupComplete)
+		}
+	})
+}
+
+func TestAuthRepositorySetupPrecheckDoesNotBypassFinalRecheck(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "precheck-race.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	repository := NewAuthRepository(store)
+	now := time.Unix(1700000000, 0).UTC()
+	tokenHash := session.HashToken("race-token")
+	if _, err := repository.EnsureSetupToken(ctx, tokenHash, now, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ValidateSetupToken(ctx, tokenHash, now); err != nil {
+		t.Fatalf("precheck = %v", err)
+	}
+	if _, err := repository.CreateAdministrator(ctx, tokenHash, "admin_competing", "competing", testPasswordHash, now); err != nil {
+		t.Fatalf("competing setup = %v", err)
+	}
+	if _, err := repository.CreateAdministrator(ctx, tokenHash, "admin_original", "original", testPasswordHash, now); !errors.Is(err, ErrSetupComplete) {
+		t.Fatalf("original final recheck = %v, want %v", err, ErrSetupComplete)
+	}
+	if got := rawInt(t, store.db, "SELECT COUNT(*) FROM administrators"); got != 1 {
+		t.Fatalf("administrator count = %d, want 1", got)
+	}
+}
+
 func TestAuthRepositoryConcurrentSetupCreatesOneAdministrator(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "concurrent.sqlite")})
