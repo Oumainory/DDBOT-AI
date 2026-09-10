@@ -1,5 +1,7 @@
 # P1C — Secret Store Foundation
 
+状态：**P1C DONE / CLOSED；P1D READY**。
+
 P1C adds the platform Secret Store foundation beside the existing Legacy WSa
 runtime. It provides a durable encrypted envelope for future connector
 credentials and a health/readiness boundary; it does not yet expose credential
