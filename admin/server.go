@@ -19,6 +19,7 @@ import (
 	"github.com/cnxysoft/DDBOT-WSa/internal/origin"
 	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
 	"github.com/cnxysoft/DDBOT-WSa/internal/runtimeconfig"
+	"github.com/cnxysoft/DDBOT-WSa/internal/secretstore"
 	"github.com/cnxysoft/DDBOT-WSa/internal/session"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
@@ -151,12 +152,13 @@ type Server struct {
 	platformStore *platformdb.Store
 }
 
-// PlatformConfig controls the opt-in P1B platform foundation mounted next to
+// PlatformConfig controls the opt-in Phase 1 platform foundation mounted next to
 // the legacy /api/v1 server. Zero values deliberately resolve from the safe
 // native defaults and environment variables, so legacy callers can keep using
 // Start without changing their behavior.
 type PlatformConfig struct {
 	DatabasePath  string
+	MasterKeyFile string
 	RuntimeMode   runtimeconfig.RuntimeMode
 	Origin        origin.Policy
 	RequireOrigin bool
@@ -183,8 +185,8 @@ func Start(online *atomic.Bool, alive *atomic.Bool) (*Server, error) {
 	return start(online, alive, nil)
 }
 
-// StartWithPlatform starts the legacy admin server and the narrow P1B auth /
-// health surface. Platform initialization is intentionally fail-open for the
+// StartWithPlatform starts the legacy admin server and the narrow Phase 1 auth /
+// secret-store / health surface. Platform initialization is intentionally fail-open for the
 // Legacy Core: an unavailable platform database is reported by health/readiness
 // and leaves /api/v1 running.
 func StartWithPlatform(online *atomic.Bool, alive *atomic.Bool, platform PlatformConfig) (*Server, error) {
@@ -291,6 +293,7 @@ func start(online *atomic.Bool, alive *atomic.Bool, platform *PlatformConfig) (*
 type platformHTTP struct {
 	handler      http.Handler
 	probe        platformdb.Probe
+	secretStore  *secretstore.Service
 	bootstrap    auth.BootstrapResult
 	bootstrapErr error
 }
@@ -304,7 +307,12 @@ func newPlatformHTTP(platform PlatformConfig) (platformHTTP, *platformdb.Store, 
 		databasePath = "ddbot-ai.sqlite"
 	}
 	store, openErr := platformdb.Open(context.Background(), platformdb.Config{Path: databasePath})
-	probe := platformdb.NewProbeWithAuth(store, openErr)
+	var secretRepository *platformdb.SecretRepository
+	if store != nil {
+		secretRepository = platformdb.NewSecretRepository(store)
+	}
+	secretService := secretstore.New(context.Background(), secretRepository, secretstore.Config{MasterKeyFile: platform.MasterKeyFile})
+	probe := platformdb.NewProbeWithAuthAndSecret(store, openErr, secretService)
 	var repository *platformdb.AuthRepository
 	if store != nil {
 		repository = platformdb.NewAuthRepository(store)
@@ -336,6 +344,7 @@ func newPlatformHTTP(platform PlatformConfig) (platformHTTP, *platformdb.Store, 
 	return platformHTTP{
 		handler:      authServer.Handler(),
 		probe:        probe,
+		secretStore:  secretService,
 		bootstrap:    result,
 		bootstrapErr: bootstrapErr,
 	}, store, nil
@@ -358,6 +367,9 @@ func resolvePlatformConfig(platform PlatformConfig) PlatformConfig {
 	}
 	if !platform.Cookie.Secure {
 		platform.Cookie.Secure = envBool("DDBOT_AI_COOKIE_SECURE")
+	}
+	if strings.TrimSpace(platform.MasterKeyFile) == "" {
+		platform.MasterKeyFile = strings.TrimSpace(os.Getenv("DDBOT_AI_MASTER_KEY_FILE"))
 	}
 	return platform
 }

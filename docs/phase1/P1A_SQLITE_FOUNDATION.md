@@ -39,9 +39,10 @@ applied_at
 
 `001_core.sql` 已发布且 immutable，不能被重写或重新计算 checksum。P1A.1 新增
 `002_contracts.sql`，P1A.2 新增 `003_contract_guards.sql`；P1B 新增 immutable
-`004_admin_auth.sql`。因此 fresh database 按 `1 → 2 → 3 → 4` 创建 latest schema，
-已有 v1/v2/v3 database 按缺失的有序 migration 升级；P1B 的 v3 → v4 认证 schema
-与启动 bootstrap 细节见 [P1B_ADMIN_AUTH.md](./P1B_ADMIN_AUTH.md)。
+`004_admin_auth.sql`。P1C 再以独立 checksum 新增 `005_secret_store.sql`，因此当前
+fresh database 按 `1 → 2 → 3 → 4 → 5` 创建 latest schema；P1A/P1B 的 v3 → v4
+历史契约仍保持不变，Secret Store 的 v4 → v5 升级见
+[P1C_SECRET_STORE.md](./P1C_SECRET_STORE.md)。
 
 ## Pre-migration backup gate
 
@@ -67,8 +68,8 @@ fresh empty database 不需要无意义的备份；已经是 latest schema 的 d
 目标不可创建或 `VACUUM INTO` 失败，都会返回 `ErrPreMigrationBackup`，且不会执行任何
 pending migration。备份失败时 live schema、原始数据和 `schema_migrations` 都保持不变。
 
-成功的 v1 → v4 gate 因此得到一个仍为 v1 的快照；v2 → v4、v3 → v4 同理得到迁移前
-快照。只有 live database 在备份成功后才记录对应 migration。后续重新打开 latest v4
+成功的 v1 → v5 gate 因此得到一个仍为 v1 的快照；v2/v3/v4 → v5 同理得到迁移前
+快照。只有 live database 在备份成功后才记录对应 migration。后续重新打开 latest v5
 不会再次产生 pre-migration backup。
 
 ## P1A.1 / P1A.2 schema closure
@@ -132,11 +133,11 @@ Probe.Readyz()   → GET /readyz
 
 当前实现的测试覆盖：
 
-- WAL、foreign keys、busy timeout 和 ordered migration version 1 → 2 → 3 → 4；
-- 001/002/003/004 immutable checksum、future/unknown/missing history 拒绝；
-- fresh/latest 不备份、v1 → v4、v2 → v4 与 v3 → v4 的真实 migration 前快照、默认/显式目标和冲突保护；
+- WAL、foreign keys、busy timeout 和 ordered migration version 1 → 2 → 3 → 4 → 5；
+- 001/002/003/004 immutable checksum 与 005 独立 checksum、future/unknown/missing history 拒绝；
+- fresh/latest 不备份、v1/v2/v3/v4 → v5 的真实 migration 前快照、默认/显式目标和冲突保护；
 - backup failure 阻止所有 schema mutation，002 失败时事务整体回滚；
-- 重启后的幂等 migration，且 latest v4 database 不重复创建 pre-migration backup；
+- 重启后的幂等 migration，且 latest v5 database 不重复创建 pre-migration backup；
 - v3 route decision INSERT/UPDATE trigger、legacy NULL hold 保留和非相关字段更新；
 - request fingerprint 的 method/path/query/body 语义、显式 in-progress/completed、completed_at 和固定 7 天 expiry；
 - `migration_held` 的 route decision identity 序列化、旧数据安全回填和 crash-style 独立恢复；
@@ -145,4 +146,5 @@ Probe.Readyz()   → GET /readyz
 - SQLite 打开失败时 health 仍存活、readiness 返回 503；
 - health/readiness HTTP method、状态码和敏感信息边界。
 
-本切片仍然不接入 Admin Auth、Secret Store、`/api/v2` 业务命令、Vue Shell、AI、Connector 或 SQLite Subscription Primary。
+本切片仍然不接入 Admin Auth、`/api/v2` 业务命令、Vue Shell、AI、Connector 或
+SQLite Subscription Primary；Secret Store 的 P1C 行为见 [P1C_SECRET_STORE.md](./P1C_SECRET_STORE.md)。

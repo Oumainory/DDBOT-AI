@@ -10,6 +10,15 @@ import (
 	"testing"
 )
 
+type healthDependency struct {
+	status CheckStatus
+	code   string
+}
+
+func (d healthDependency) Check(context.Context) (CheckStatus, string) {
+	return d.status, d.code
+}
+
 func TestProbeReportsReadyDatabaseAndNonSensitiveHTTPPayload(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "ddbot.sqlite")})
@@ -91,6 +100,52 @@ func TestProbeWithAuthTreatsSetupRequiredAsReady(t *testing.T) {
 	ready := probe.Ready(ctx)
 	if ready.Status != StatusReady || ready.HTTPStatus() != http.StatusOK || ready.Checks["auth"].Code != "setup_required" {
 		t.Fatalf("ready with setup required = %#v", ready)
+	}
+}
+
+func TestProbeIncludesSecretStoreHealthAndReadiness(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "secret-health.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	readyProbe := NewProbeWithAuthAndSecret(store, nil, healthDependency{status: CheckOK, code: "secret_store_ready"})
+	health := readyProbe.Health(ctx)
+	if health.Status != StatusHealthy || health.Checks["secret_store"] != (Check{Status: CheckOK, Code: "secret_store_ready"}) {
+		t.Fatalf("ready secret health = %#v", health)
+	}
+	ready := readyProbe.Ready(ctx)
+	if ready.Status != StatusReady || ready.HTTPStatus() != http.StatusOK || ready.Checks["secret_store"].Code != "secret_store_ready" {
+		t.Fatalf("ready secret readiness = %#v", ready)
+	}
+
+	recoveryProbe := NewProbeWithAuthAndSecret(store, nil, healthDependency{status: CheckDegraded, code: "secret_store_recovery"})
+	health = recoveryProbe.Health(ctx)
+	if health.Status != StatusDegraded || health.HTTPStatus() != http.StatusOK || health.Checks["secret_store"].Code != "secret_store_recovery" {
+		t.Fatalf("recovery secret health = %#v", health)
+	}
+	ready = recoveryProbe.Ready(ctx)
+	if ready.Status != StatusNotReady || ready.HTTPStatus() != http.StatusServiceUnavailable || ready.Checks["secret_store"].Code != "secret_store_recovery" {
+		t.Fatalf("recovery secret readiness = %#v", ready)
+	}
+
+	unavailableProbe := NewProbeWithAuthAndSecret(nil, ErrDatabaseClosed, healthDependency{status: CheckDegraded, code: "secret_store_unavailable"})
+	health = unavailableProbe.Health(ctx)
+	if health.Status != StatusDegraded || health.HTTPStatus() != http.StatusOK || health.Checks["secret_store"].Code != "secret_store_unavailable" {
+		t.Fatalf("unavailable secret health = %#v", health)
+	}
+	ready = unavailableProbe.Ready(ctx)
+	if ready.Status != StatusNotReady || ready.HTTPStatus() != http.StatusServiceUnavailable || ready.Checks["secret_store"].Code != "secret_store_unavailable" {
+		t.Fatalf("unavailable secret readiness = %#v", ready)
+	}
+
+	keyPath := filepath.Join(t.TempDir(), "master.key")
+	recorder := httptest.NewRecorder()
+	recoveryProbe.Healthz().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if recorder.Code != http.StatusOK || strings.Contains(recorder.Body.String(), keyPath) {
+		t.Fatalf("health leaked secret configuration: %d %s", recorder.Code, recorder.Body.String())
 	}
 }
 

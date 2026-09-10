@@ -17,8 +17,8 @@ func TestMigrationDefinitionsAreOrderedAndIndependentlyChecksummed(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(definitions) != 4 {
-		t.Fatalf("migration count = %d, want 4", len(definitions))
+	if len(definitions) != 5 {
+		t.Fatalf("migration count = %d, want 5", len(definitions))
 	}
 	if definitions[0].version != 1 || definitions[0].filename != "001_core.sql" || definitions[0].name != "core" {
 		t.Fatalf("v1 definition = %#v", definitions[0])
@@ -43,6 +43,12 @@ func TestMigrationDefinitionsAreOrderedAndIndependentlyChecksummed(t *testing.T)
 	}
 	if definitions[3].checksum != "sha256:48da493fdf4c57c08bece88fb90f0c2af7eeca597a899f2b66a19fcc569a75ac" {
 		t.Fatalf("immutable v4 checksum changed: %s", definitions[3].checksum)
+	}
+	if definitions[4].version != 5 || definitions[4].filename != "005_secret_store.sql" || definitions[4].name != "secret_store" {
+		t.Fatalf("v5 definition = %#v", definitions[4])
+	}
+	if definitions[4].checksum != "sha256:31464165512e3ac8e33668944d45ca52bae39c46ed1c6efec8ca64f288f2a133" {
+		t.Fatalf("v5 checksum changed: %s", definitions[4].checksum)
 	}
 	for index, definition := range definitions {
 		if definition.version != index+1 {
@@ -107,11 +113,11 @@ func TestV1ToV2HistoryCanBePreparedBeforeV3(t *testing.T) {
 	}
 }
 
-func TestV1ToV4TakesBackupBeforeSchemaMutation(t *testing.T) {
+func TestV1ToV5TakesBackupBeforeSchemaMutation(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	databasePath := filepath.Join(dir, "v1.sqlite")
-	backupPath := filepath.Join(dir, "v1-before-v4.sqlite")
+	backupPath := filepath.Join(dir, "v1-before-v5.sqlite")
 	createV1Database(t, databasePath)
 
 	store, err := Open(ctx, Config{
@@ -127,7 +133,7 @@ func TestV1ToV4TakesBackupBeforeSchemaMutation(t *testing.T) {
 	if got := store.LastPreMigrationBackupPath(); got != backupPath {
 		t.Fatalf("pre-migration backup path = %q, want %q", got, backupPath)
 	}
-	if version, err := store.SchemaVersion(ctx); err != nil || version != 4 {
+	if version, err := store.SchemaVersion(ctx); err != nil || version != 5 {
 		t.Fatalf("live schema version = %d, err = %v", version, err)
 	}
 	if err := store.Close(); err != nil {
@@ -157,8 +163,8 @@ func TestV1ToV4TakesBackupBeforeSchemaMutation(t *testing.T) {
 
 	live := openRawDatabase(t, databasePath)
 	defer live.Close()
-	if version := rawSchemaVersion(t, live); version != 4 {
-		t.Fatalf("live schema version = %d, want v4", version)
+	if version := rawSchemaVersion(t, live); version != 5 {
+		t.Fatalf("live schema version = %d, want v5", version)
 	}
 	for _, column := range []string{"canonical_query", "command_type", "execution_status", "completed_at"} {
 		if !rawHasColumn(t, live, "idempotency_records", column) {
@@ -183,11 +189,11 @@ func TestV1ToV4TakesBackupBeforeSchemaMutation(t *testing.T) {
 	}
 }
 
-func TestV2ToV4TakesV2BackupAndPreservesLegacyHold(t *testing.T) {
+func TestV2ToV5TakesV2BackupAndPreservesLegacyHold(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	databasePath := filepath.Join(dir, "v2.sqlite")
-	backupPath := filepath.Join(dir, "v2-before-v4.sqlite")
+	backupPath := filepath.Join(dir, "v2-before-v5.sqlite")
 	createV2Database(t, databasePath)
 
 	store, err := Open(ctx, Config{
@@ -203,7 +209,7 @@ func TestV2ToV4TakesV2BackupAndPreservesLegacyHold(t *testing.T) {
 	if got := store.LastPreMigrationBackupPath(); got != backupPath {
 		t.Fatalf("pre-migration backup path = %q, want %q", got, backupPath)
 	}
-	if version, err := store.SchemaVersion(ctx); err != nil || version != 4 {
+	if version, err := store.SchemaVersion(ctx); err != nil || version != 5 {
 		t.Fatalf("live schema version = %d, err = %v", version, err)
 	}
 	if err := store.Close(); err != nil {
@@ -230,8 +236,8 @@ func TestV2ToV4TakesV2BackupAndPreservesLegacyHold(t *testing.T) {
 
 	live := openRawDatabase(t, databasePath)
 	defer live.Close()
-	if version := rawSchemaVersion(t, live); version != 4 {
-		t.Fatalf("live schema version = %d, want v4", version)
+	if version := rawSchemaVersion(t, live); version != 5 {
+		t.Fatalf("live schema version = %d, want v5", version)
 	}
 	var liveRoute sql.NullString
 	if err := live.QueryRow("SELECT route_decision_id FROM delivery_migration_holds WHERE delivery_id = 'legacy-delivery'").Scan(&liveRoute); err != nil {
@@ -242,11 +248,11 @@ func TestV2ToV4TakesV2BackupAndPreservesLegacyHold(t *testing.T) {
 	}
 }
 
-func TestV3ToV4TakesV3BackupBeforeAuthSchemaMutation(t *testing.T) {
+func TestV3ToV5TakesV3BackupBeforeAuthSchemaMutation(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	databasePath := filepath.Join(dir, "v3.sqlite")
-	backupPath := filepath.Join(dir, "v3-before-v4.sqlite")
+	backupPath := filepath.Join(dir, "v3-before-v5.sqlite")
 	createV3Database(t, databasePath)
 
 	store, err := Open(ctx, Config{
@@ -262,7 +268,7 @@ func TestV3ToV4TakesV3BackupBeforeAuthSchemaMutation(t *testing.T) {
 	if got := store.LastPreMigrationBackupPath(); got != backupPath {
 		t.Fatalf("pre-migration backup path = %q, want %q", got, backupPath)
 	}
-	if version, err := store.SchemaVersion(ctx); err != nil || version != 4 {
+	if version, err := store.SchemaVersion(ctx); err != nil || version != 5 {
 		t.Fatalf("live schema version = %d, err = %v", version, err)
 	}
 	if err := store.Close(); err != nil {
@@ -284,8 +290,95 @@ func TestV3ToV4TakesV3BackupBeforeAuthSchemaMutation(t *testing.T) {
 	defer live.Close()
 	for _, table := range []string{"administrators", "sessions", "setup_state", "setup_tokens"} {
 		if !rawTableExists(t, live, table) {
-			t.Fatalf("live v4 database missing table %q", table)
+			t.Fatalf("live upgraded database missing table %q", table)
 		}
+	}
+}
+
+func TestV4ToV5TakesBackupBeforeSecretSchemaMutation(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	databasePath := filepath.Join(dir, "v4.sqlite")
+	backupPath := filepath.Join(dir, "v4-before-v5.sqlite")
+	createV4Database(t, databasePath)
+
+	store, err := Open(ctx, Config{
+		Path: databasePath,
+		Now:  func() time.Time { return time.Unix(1700000000, 0).UTC() },
+		PreMigrationBackup: PreMigrationBackupConfig{
+			Destination: backupPath,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store.LastPreMigrationBackupPath(); got != backupPath {
+		t.Fatalf("pre-migration backup path = %q, want %q", got, backupPath)
+	}
+	if version, err := store.SchemaVersion(ctx); err != nil || version != 5 {
+		t.Fatalf("live schema version = %d, err = %v", version, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	backup := openRawDatabase(t, backupPath)
+	if version := rawSchemaVersion(t, backup); version != 4 {
+		t.Fatalf("backup schema version = %d, want v4", version)
+	}
+	if rawTableExists(t, backup, "secret_store_state") || rawTableExists(t, backup, "credentials") || rawTableExists(t, backup, "credential_secrets") {
+		t.Fatal("v4 backup unexpectedly contains secret-store tables")
+	}
+	if err := backup.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	live := openRawDatabase(t, databasePath)
+	defer live.Close()
+	if version := rawSchemaVersion(t, live); version != 5 {
+		t.Fatalf("live schema version = %d, want v5", version)
+	}
+	for _, table := range []string{"secret_store_state", "credentials", "credential_secrets"} {
+		if !rawTableExists(t, live, table) {
+			t.Fatalf("live database missing secret-store table %q", table)
+		}
+	}
+}
+
+func TestMigration005FailureRollsBackSecretSchema(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	databasePath := filepath.Join(dir, "v4-conflict.sqlite")
+	backupPath := filepath.Join(dir, "v4-conflict-backup.sqlite")
+	createV4Database(t, databasePath)
+	db := openRawDatabase(t, databasePath)
+	if _, err := db.Exec("CREATE TABLE credentials (id TEXT PRIMARY KEY)"); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(ctx, Config{
+		Path: databasePath,
+		PreMigrationBackup: PreMigrationBackupConfig{
+			Destination: backupPath,
+		},
+	})
+	if store != nil || err == nil {
+		t.Fatalf("conflicting v5 migration = store %v, err %v", store, err)
+	}
+	verify := openRawDatabase(t, databasePath)
+	defer verify.Close()
+	if rawSchemaVersion(t, verify) != 4 {
+		t.Fatalf("schema version after v5 rollback = %d, want v4", rawSchemaVersion(t, verify))
+	}
+	if rawTableExists(t, verify, "secret_store_state") || rawTableExists(t, verify, "credential_secrets") {
+		t.Fatal("failed v5 migration left partial secret-store tables")
+	}
+	if count := rawInt(t, verify, "SELECT COUNT(*) FROM schema_migrations WHERE version = 5"); count != 0 {
+		t.Fatalf("v5 migration history row after rollback = %d", count)
 	}
 }
 
@@ -325,7 +418,7 @@ func TestPreMigrationBackupFailureLeavesV1Untouched(t *testing.T) {
 	}
 }
 
-func TestPreMigrationBackupDestinationCollisionBlocksV4Migration(t *testing.T) {
+func TestPreMigrationBackupDestinationCollisionBlocksV5Migration(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	databasePath := filepath.Join(dir, "v3.sqlite")
@@ -348,11 +441,11 @@ func TestPreMigrationBackupDestinationCollisionBlocksV4Migration(t *testing.T) {
 	}
 }
 
-func TestSecondStartupAfterV4DoesNotRepeatPreMigrationBackup(t *testing.T) {
+func TestSecondStartupAfterV5DoesNotRepeatPreMigrationBackup(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	databasePath := filepath.Join(dir, "v1.sqlite")
-	backupPath := filepath.Join(dir, "before-v4.sqlite")
+	backupPath := filepath.Join(dir, "before-v5.sqlite")
 	createV1Database(t, databasePath)
 	first, err := Open(ctx, Config{Path: databasePath, PreMigrationBackup: PreMigrationBackupConfig{Destination: backupPath}})
 	if err != nil {
@@ -388,7 +481,7 @@ func TestDefaultPreMigrationBackupDestinationIsDeterministic(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	want := databasePath + ".pre-migration-v1-to-v4-20231114T221320.123000000Z.sqlite"
+	want := databasePath + ".pre-migration-v1-to-v5-20231114T221320.123000000Z.sqlite"
 	if backupPath != want {
 		t.Fatalf("default backup path = %q, want %q", backupPath, want)
 	}
@@ -457,6 +550,27 @@ func TestMigration004ChecksumMismatchIsRejected(t *testing.T) {
 	opened, err := Open(ctx, Config{Path: databasePath})
 	if opened != nil || !errors.Is(err, ErrMigrationChecksum) {
 		t.Fatalf("Open(v4 checksum mismatch) = store %v, err %v", opened, err)
+	}
+}
+
+func TestMigration005ChecksumMismatchIsRejected(t *testing.T) {
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "latest.sqlite")
+	store, err := Open(ctx, Config{Path: databasePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db := openRawDatabase(t, databasePath)
+	mustExec(t, db, "UPDATE schema_migrations SET checksum = 'sha256:tampered-v5' WHERE version = 5")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := Open(ctx, Config{Path: databasePath})
+	if opened != nil || !errors.Is(err, ErrMigrationChecksum) {
+		t.Fatalf("Open(v5 checksum mismatch) = store %v, err %v", opened, err)
 	}
 }
 
@@ -666,6 +780,32 @@ func createV3Database(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec("INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)", definitions[2].version, definitions[2].name, definitions[2].checksum, 1700000000); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func createV4Database(t *testing.T, path string) {
+	t.Helper()
+	createV3Database(t, path)
+	db := openRawDatabase(t, path)
+	defer db.Close()
+	definitions, err := migrationDefinitions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(definitions[3].sql); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)", definitions[3].version, definitions[3].name, definitions[3].checksum, 1700000000); err != nil {
 		_ = tx.Rollback()
 		t.Fatal(err)
 	}

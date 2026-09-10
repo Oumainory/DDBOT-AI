@@ -1,4 +1,4 @@
--- DDBOT-AI current v4 schema reference (non-authoritative).
+-- DDBOT-AI current v5 schema reference (non-authoritative).
 -- The authoritative, immutable history is internal/platformdb/migrations/*.sql.
 -- The Core will execute these statements on the single SQLite owner
 -- connection with foreign_keys=ON, WAL, and a busy timeout.
@@ -128,3 +128,39 @@ END;
 -- The release coordinator must delete/transition only rows owned by its
 -- migration_id. `unknown` deliveries are intentionally absent from this
 -- release path and are never automatically requeued.
+
+-- P1C Secret Store reference. The Master Key and plaintext are intentionally
+-- absent; internal/platformdb/migrations/005_secret_store.sql is authoritative.
+CREATE TABLE IF NOT EXISTS secret_store_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    envelope_version INTEGER NOT NULL CHECK (envelope_version > 0),
+    sentinel_nonce BLOB NOT NULL,
+    sentinel_ciphertext BLOB NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS credentials (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    label TEXT NOT NULL,
+    source TEXT NOT NULL,
+    configured INTEGER NOT NULL DEFAULT 0 CHECK (configured IN (0, 1)),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS credential_secrets (
+    credential_id TEXT PRIMARY KEY,
+    envelope_version INTEGER NOT NULL CHECK (envelope_version > 0),
+    secret_revision INTEGER NOT NULL CHECK (secret_revision > 0),
+    nonce BLOB NOT NULL,
+    ciphertext BLOB NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (credential_id) REFERENCES credentials (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_credentials_type ON credentials (type);
+CREATE INDEX IF NOT EXISTS idx_credentials_source ON credentials (source);
+CREATE INDEX IF NOT EXISTS idx_credentials_updated ON credentials (updated_at);

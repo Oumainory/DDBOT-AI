@@ -187,6 +187,17 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: go build -trimpath -buildmode=archive -o "build/platformdb-${GOOS}-${GOARCH}.a" ./internal/platformdb
 
+      - name: Compile P1C secret and auth foundations without CGO
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          for package in secretstore auth adminauth session csrf origin; do
+            go build -trimpath -buildmode=archive -o "build/${package}-${GOOS}-${GOARCH}.a" "./internal/${package}"
+          done
+
       - name: Verify build artifact exists
         shell: bash
         run: |

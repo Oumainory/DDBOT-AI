@@ -30,6 +30,14 @@ type Check struct {
 	Code   string      `json:"code,omitempty"`
 }
 
+// DependencyChecker is the deliberately small boundary used by optional
+// platform components such as Secret Store. Implementations return only a
+// stable status/code pair; raw errors and sensitive configuration stay out of
+// health/readiness responses.
+type DependencyChecker interface {
+	Check(context.Context) (CheckStatus, string)
+}
+
 type Report struct {
 	Status Status           `json:"status"`
 	Checks map[string]Check `json:"checks"`
@@ -52,6 +60,7 @@ type Probe struct {
 	store   *Store
 	initErr error
 	auth    *AuthRepository
+	secret  DependencyChecker
 }
 
 func NewProbe(store *Store, initErr error) Probe {
@@ -67,6 +76,14 @@ func NewProbeWithAuth(store *Store, initErr error) Probe {
 	return probe
 }
 
+// NewProbeWithAuthAndSecret extends the P1B probe without changing the
+// existing constructor or its SQLite/Auth semantics.
+func NewProbeWithAuthAndSecret(store *Store, initErr error, secret DependencyChecker) Probe {
+	probe := NewProbeWithAuth(store, initErr)
+	probe.secret = secret
+	return probe
+}
+
 func (p Probe) Health(ctx context.Context) Report {
 	report := Report{
 		Status: StatusHealthy,
@@ -77,11 +94,13 @@ func (p Probe) Health(ctx context.Context) Report {
 	if p.store == nil || p.initErr != nil {
 		report.Status = StatusDegraded
 		report.Checks["sqlite"] = Check{Status: CheckDegraded, Code: "sqlite_initialization_failed"}
+		p.addSecretHealth(ctx, &report)
 		return report
 	}
 	if err := p.store.Ping(ctx); err != nil {
 		report.Status = StatusDegraded
 		report.Checks["sqlite"] = Check{Status: CheckDegraded, Code: "sqlite_unavailable"}
+		p.addSecretHealth(ctx, &report)
 		return report
 	}
 	report.Checks["sqlite"] = Check{Status: CheckOK, Code: "sqlite_alive"}
@@ -96,6 +115,7 @@ func (p Probe) Health(ctx context.Context) Report {
 			report.Checks["auth"] = Check{Status: CheckOK, Code: "auth_ready"}
 		}
 	}
+	p.addSecretHealth(ctx, &report)
 	return report
 }
 
@@ -107,29 +127,41 @@ func (p Probe) Ready(ctx context.Context) Report {
 		},
 	}
 	if p.store == nil || p.initErr != nil {
-		return notReady(report, "sqlite", "sqlite_initialization_failed")
+		report = notReady(report, "sqlite", "sqlite_initialization_failed")
+		p.addSecretReadiness(ctx, &report)
+		return report
 	}
 	if err := p.store.Ping(ctx); err != nil {
-		return notReady(report, "sqlite", "sqlite_unavailable")
+		report = notReady(report, "sqlite", "sqlite_unavailable")
+		p.addSecretReadiness(ctx, &report)
+		return report
 	}
 	report.Checks["sqlite"] = Check{Status: CheckOK, Code: "sqlite_alive"}
 	version, err := p.store.SchemaVersion(ctx)
 	if err != nil {
-		return notReady(report, "schema", "schema_unavailable")
+		report = notReady(report, "schema", "schema_unavailable")
+		p.addSecretReadiness(ctx, &report)
+		return report
 	}
 	definitions, err := migrationDefinitions()
 	if err != nil || len(definitions) == 0 {
-		return notReady(report, "schema", "schema_definition_unavailable")
+		report = notReady(report, "schema", "schema_definition_unavailable")
+		p.addSecretReadiness(ctx, &report)
+		return report
 	}
 	expected := definitions[len(definitions)-1].version
 	if version != expected {
-		return notReady(report, "schema", "schema_version_mismatch")
+		report = notReady(report, "schema", "schema_version_mismatch")
+		p.addSecretReadiness(ctx, &report)
+		return report
 	}
 	report.Checks["schema"] = Check{Status: CheckOK, Code: "schema_current"}
 	if p.auth != nil {
 		state, err := p.auth.State(ctx)
 		if err != nil {
-			return notReady(report, "auth", "auth_unavailable")
+			report = notReady(report, "auth", "auth_unavailable")
+			p.addSecretReadiness(ctx, &report)
+			return report
 		}
 		if state == AuthSetupRequired {
 			report.Checks["auth"] = Check{Status: CheckOK, Code: "setup_required"}
@@ -137,7 +169,31 @@ func (p Probe) Ready(ctx context.Context) Report {
 			report.Checks["auth"] = Check{Status: CheckOK, Code: "auth_ready"}
 		}
 	}
+	p.addSecretReadiness(ctx, &report)
 	return report
+}
+
+func (p Probe) addSecretHealth(ctx context.Context, report *Report) {
+	if p.secret == nil {
+		return
+	}
+	status, code := p.secret.Check(ctx)
+	report.Checks["secret_store"] = Check{Status: status, Code: code}
+	if status != CheckOK {
+		report.Status = StatusDegraded
+	}
+}
+
+func (p Probe) addSecretReadiness(ctx context.Context, report *Report) {
+	if p.secret == nil {
+		return
+	}
+	status, code := p.secret.Check(ctx)
+	if status != CheckOK {
+		*report = notReady(*report, "secret_store", code)
+		return
+	}
+	report.Checks["secret_store"] = Check{Status: CheckOK, Code: code}
 }
 
 func notReady(report Report, name, code string) Report {

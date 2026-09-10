@@ -6,12 +6,17 @@ Phase 0 只固定最容易被错误实现的持久化契约。Core 是 SQLite �
 SQL。已发布的 migration（尤其 `001_core.sql`）是 immutable；后续修正必须新增有序、独立
 checksum 的 migration。
 
-当前 v4 schema 固定三类平台状态：
+当前 v5 schema 固定四类平台状态：
 
 - `idempotency_records` 保存主体、Key、uppercase method、concrete path、canonical query、body SHA-256、command type、显式 execution status、sanitized response、创建/完成/过期时间；原始敏感 request body 永不落库；
 - `delivery_migration_holds` 保存 `migration_held` 重启所需的 delivery/event、独立 route decision identity、route snapshot、logical target 和 message snapshot。
 - `administrators`、`setup_state`、`setup_tokens` 和 `sessions` 保存 P1B 的唯一管理员、一次性
   bootstrap token 与 server-side Session；原始 Setup/Session token 永不落库。
+- `secret_store_state`、`credentials` 和 `credential_secrets` 保存 P1C 的加密哨兵、非敏感
+  credential metadata 与 AES-256-GCM envelope；Master Key 和 plaintext 永不进入 SQLite。
+
+P1C 的 Master Key 文件格式、AAD、Recovery 与 health/readiness 契约见
+[`docs/phase1/P1C_SECRET_STORE.md`](../phase1/P1C_SECRET_STORE.md)。
 
 旧 v1 幂等行升级时，`command_type` 为 `unknown`，`execution_status` 从旧 `status_code`
 推导，无法可靠恢复的 `completed_at` 保持 `NULL`。旧 hold 行的 `route_decision_id` 可以
