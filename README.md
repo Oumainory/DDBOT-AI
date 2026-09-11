@@ -6,14 +6,14 @@ DDBOT-AI 是一个面向个人、社群和机器人运营场景的多平台信�
 
 ## 当前状态
 
-仓库已完成并冻结 Phase 0 / Phase 1 基础契约阶段，冻结点分别为 `phase0-baseline`（`2030834d423e8313df4ae7a937aec0f0badbd443`）和 `phase1-baseline`（`6b1d591f388f50a31855a8f93a50c4a344e2b01e`）。Phase 2 Observation 读路径、诊断 Dashboard 和最终验收已完成，当前等待单独的 Git freeze 操作：
+仓库已完成并冻结 Phase 0 / Phase 1 / Phase 2，冻结点分别为 `phase0-baseline`（`2030834d423e8313df4ae7a937aec0f0badbd443`）、`phase1-baseline`（`6b1d591f388f50a31855a8f93a50c4a344e2b01e`）和 `phase2-baseline`（`998388b529b9f9dc472ba29e20bd29a5f63270c1`）。Phase 3A Domain / Projection / Discovery 已完成，当前分支为 P3A 开发分支，P3B 尚未开始：
 
 - 已锁定上游基线提交 `a6364e7182ec4eee93dd78e09fe7a7efd92bffab`。
 - 已建立兼容性特征清单，覆盖命令、过滤、模板、OneBot 离线队列、多分片和 Bilibili/Twitter 典型事件。
 - 已建立三目标 `CGO_ENABLED=0` CI 门禁：Linux amd64、Linux arm64、Windows amd64。
 - 已建立事件/分类词表、字段级策略继承、Fail-open 决策和 ClassifierRelease 指纹契约。
 - FFmpeg 统一通过独立可执行文件调用，主程序不链接 FFmpeg 库。
-- Phase 0 和 Phase 1 已标记为 `DONE / FROZEN`，Phase 2 当前为 `READY FOR FREEZE`；Phase 3 尚未开始。P2A 写入和 Phase 2 读路径见 [Phase 2 — Observation](./docs/phase2/README.md)、[P2A Passive Observation](./docs/phase2/P2A_PASSIVE_OBSERVATION.md) 和 [Phase 2 Final Acceptance](./docs/phase2/PHASE2_FINAL_ACCEPTANCE.md)。
+- Phase 0、Phase 1 和 Phase 2 已标记为 `DONE / FROZEN`；P3A 已标记为 `DONE / CLOSED`，P3B 为 `READY`，AI 仍未开始。P2A 写入和 Phase 2 读路径见 [Phase 2 — Observation](./docs/phase2/README.md)、[P2A Passive Observation](./docs/phase2/P2A_PASSIVE_OBSERVATION.md) 和 [Phase 2 Final Acceptance](./docs/phase2/PHASE2_FINAL_ACCEPTANCE.md)；P3A 见 [Phase 3 — Domain](./docs/phase3/README.md)。
 
 完整的 Phase 0 实现顺序和验收条件见 [Phase 0 兼容性基线](./compat/README.md)、[V1 不变量](./docs/architecture/V1_INVARIANTS.md) 和 [发行门禁](./docs/architecture/PHASE0_RELEASE_GATES.md)。
 

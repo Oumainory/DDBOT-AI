@@ -11,16 +11,20 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cnxysoft/DDBOT-WSa/internal/adminauth"
 	"github.com/cnxysoft/DDBOT-WSa/internal/auth"
 	"github.com/cnxysoft/DDBOT-WSa/internal/buildinfo"
 	"github.com/cnxysoft/DDBOT-WSa/internal/csrf"
+	"github.com/cnxysoft/DDBOT-WSa/internal/discovery"
+	"github.com/cnxysoft/DDBOT-WSa/internal/idempotency"
 	"github.com/cnxysoft/DDBOT-WSa/internal/observation"
 	"github.com/cnxysoft/DDBOT-WSa/internal/origin"
 	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
 	"github.com/cnxysoft/DDBOT-WSa/internal/session"
+	"github.com/cnxysoft/DDBOT-WSa/lsp/subscription"
 	"go.uber.org/atomic"
 )
 
@@ -34,6 +38,11 @@ type Config struct {
 	Build                 buildinfo.Info
 	ObservationRepository *platformdb.ObservationRepository
 	ObservationRecorder   *observation.Recorder
+	DomainRepository      *platformdb.DomainRepository
+	LegacySubscriptions   *subscription.Service
+	Idempotency           *idempotency.MemoryStore
+	BilibiliResolver      discovery.BilibiliResolver
+	TwitterResolver       discovery.TwitterResolver
 	Now                   func() time.Time
 }
 
@@ -48,6 +57,13 @@ type Server struct {
 	authHandler           http.Handler
 	observationRepository *platformdb.ObservationRepository
 	observationRecorder   *observation.Recorder
+	domainRepository      *platformdb.DomainRepository
+	legacySubscriptions   *subscription.Service
+	idempotency           *idempotency.MemoryStore
+	bilibiliResolver      discovery.BilibiliResolver
+	twitterResolver       discovery.TwitterResolver
+	testMu                sync.Mutex
+	testLast              map[string]time.Time
 }
 
 type Principal struct {
@@ -114,6 +130,18 @@ func NewServer(config Config) (*Server, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
+	if config.LegacySubscriptions == nil {
+		config.LegacySubscriptions = subscription.NewService()
+	}
+	if config.Idempotency == nil {
+		config.Idempotency = idempotency.NewMemoryStore(idempotency.DefaultRetention)
+	}
+	if config.BilibiliResolver == nil {
+		config.BilibiliResolver = discovery.StaticBilibiliResolver{}
+	}
+	if config.TwitterResolver == nil {
+		config.TwitterResolver = discovery.StaticTwitterResolver{}
+	}
 	if config.RequireOrigin {
 		config.Origin.AllowMissing = false
 	} else {
@@ -139,6 +167,12 @@ func NewServer(config Config) (*Server, error) {
 		now:                   config.Now,
 		observationRepository: config.ObservationRepository,
 		observationRecorder:   config.ObservationRecorder,
+		domainRepository:      config.DomainRepository,
+		legacySubscriptions:   config.LegacySubscriptions,
+		idempotency:           config.Idempotency,
+		bilibiliResolver:      config.BilibiliResolver,
+		twitterResolver:       config.TwitterResolver,
+		testLast:              make(map[string]time.Time),
 		authHandler:           authServer.Handler(),
 	}, nil
 }
@@ -165,7 +199,26 @@ func (s *Server) Handler() http.Handler {
 			s.RequireAuth(http.HandlerFunc(s.handleObservationEvents)).ServeHTTP(w, r)
 		case "/api/v2/observations/summary":
 			s.RequireAuth(http.HandlerFunc(s.handleObservationSummary)).ServeHTTP(w, r)
+		case "/api/v2/sources":
+			s.handleSources(w, r)
+		case "/api/v2/targets":
+			s.handleTargets(w, r)
+		case "/api/v2/connectors":
+			s.handleConnectors(w, r)
+		case "/api/v2/subscriptions":
+			s.handleSubscriptions(w, r)
+		case "/api/v2/subscriptions/rebuild-projection":
+			s.handleRebuildProjection(w, r)
+		case "/api/v2/discovery/bilibili/search":
+			s.handleBilibiliSearch(w, r)
+		case "/api/v2/discovery/bilibili/resolve":
+			s.handleBilibiliResolve(w, r)
+		case "/api/v2/discovery/twitter/resolve":
+			s.handleTwitterResolve(w, r)
 		default:
+			if s.handleDomainSubresource(w, r) {
+				return
+			}
 			parts := observationPathParts(r.URL.Path)
 			if len(parts) == 2 && parts[1] == "routes" {
 				s.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

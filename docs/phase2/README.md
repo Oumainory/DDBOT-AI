@@ -1,6 +1,6 @@
 # DDBOT-AI Phase 2 — Observation / Routing Foundation
 
-状态：**P2A DONE / CLOSED；PHASE 2 IMPLEMENTATION DONE — READY FOR FREEZE**。
+状态：**PHASE 2 DONE / FROZEN**。冻结点为 `phase2-baseline`（`998388b529b9f9dc472ba29e20bd29a5f63270c1`）。
 
 Phase 1 已在 `phase1-baseline`（`6b1d591f388f50a31855a8f93a50c4a344e2b01e`）冻结。
 Phase 2 从该提交开始，只增加旁路可观测性，不改变 Legacy WSa 的订阅、过滤、模板、媒体或投递决定。

@@ -125,3 +125,63 @@ export type ObservationSummary = {
   }
   recent: { events_24h: number; routes_24h: number; deliveries_24h: number }
 }
+
+export type Source = {
+  id: string
+  platform: string
+  external_id: string
+  handle?: string
+  display_name?: string
+  canonical_url?: string
+  status: string
+  subscription_count: number
+  metadata?: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export type Target = {
+  id: string
+  connector_id: string
+  connector_kind?: string
+  target_type: 'group' | 'channel'
+  external_id: string
+  display_name?: string
+  status: string
+  source_count: number
+  metadata?: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export type Connector = {
+  id: string
+  kind: string
+  name: string
+  role: string
+  enabled: boolean
+  status: string
+  endpoint?: string
+  credential_configured: boolean
+  credential_masked?: string
+  config?: Record<string, unknown>
+  metadata?: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export type SubscriptionProjection = {
+  id: string
+  source_id: string
+  target_id: string
+  legacy_key: string
+  enabled: boolean
+  projection_status: string
+  projected_at: string
+}
+
+export type SubscriptionItem = {
+  subscription: SubscriptionProjection
+  source?: Source
+  target?: Target
+}

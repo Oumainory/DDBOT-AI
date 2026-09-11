@@ -56,6 +56,14 @@ a { color: var(--color-brand); }
 .timeline-heading { margin: 22px 0 10px; font-size: 16px; }
 .timeline-row { display: grid; grid-template-columns: max-content minmax(130px, 1fr) max-content max-content; gap: 10px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--color-border); font-size: 13px; }
 .timeline-row code, .timeline-row small { color: var(--color-muted); }
+.domain-card { margin-bottom: 18px; border: 1px solid var(--color-border); border-radius: var(--radius-card); box-shadow: var(--shadow-card); }
+.domain-card h2 { margin: 8px 0; }
+.domain-card p { color: var(--color-muted); }
+.connector-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.connector-actions { display: flex; align-items: center; gap: 10px; }
+.relation-row { display: grid; grid-template-columns: minmax(120px, .7fr) minmax(120px, 1fr) max-content; gap: 10px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--color-border); }
+.candidate-list { display: flex; flex-wrap: wrap; gap: 6px; }
 @media (max-width: 760px) { .sidebar { width: 180px; flex-basis: 180px; } .topbar { padding: 0 20px; } .content-area { padding: 28px 20px; } .status-grid { grid-template-columns: 1fr; } }
 @media (max-width: 760px) { .observation-summary-grid { grid-template-columns: 1fr; } .timeline-row { grid-template-columns: 1fr; gap: 5px; } .detail-meta small { margin-left: 0; } }
 @media (max-width: 560px) { .dashboard-shell { display: block; } .sidebar { width: 100%; padding: 18px 20px; } .brand-caption { margin-bottom: 16px; } .nav-list { display: flex; } .topbar { height: 62px; } .user-name { display: none; } .product-card { display: block; } .build-values { margin-top: 20px; text-align: left; } }
+@media (max-width: 760px) { .connector-row { display: block; } .connector-actions { margin-top: 18px; flex-wrap: wrap; } }

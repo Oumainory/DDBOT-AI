@@ -1,0 +1,30 @@
+<script setup lang="ts">
+import { onMounted, reactive, ref } from 'vue'
+import { command, displayError, get, isUnauthorized } from '../api/client'
+import type { Connector, Source, SubscriptionItem, Target } from '../api/types'
+import DashboardLayout from '../components/DashboardLayout.vue'
+import { useAuthStore } from '../stores/auth'
+import { useRouter } from 'vue-router'
+
+const auth = useAuthStore(); const router = useRouter()
+const targets = ref<Target[]>([]); const connectors = ref<Connector[]>([]); const sources = ref<Source[]>([]); const relations = ref<SubscriptionItem[]>([]); const selected = ref<Target | null>(null); const detailOpen = ref(false); const loading = ref(false); const error = ref('')
+const form = reactive({ connector_id: '', target_type: 'group', external_id: '', display_name: '' })
+function handleError(value: unknown) { if (isUnauthorized(value)) { auth.clear(); auth.status = 'unauthenticated'; void router.replace({ name: 'login' }); return }; error.value = displayError(value) }
+async function load() { loading.value = true; error.value = ''; try { const [targetData, connectorData, sourceData] = await Promise.all([get<{ items: Target[] }>('/api/v2/targets'), get<{ items: Connector[] }>('/api/v2/connectors'), get<{ items: Source[] }>('/api/v2/sources')]); targets.value = targetData.items ?? []; connectors.value = connectorData.items ?? []; sources.value = sourceData.items ?? []; if (!form.connector_id && connectors.value.length) form.connector_id = connectors.value[0].id } catch (value) { handleError(value) } finally { loading.value = false } }
+async function create() { if (!form.connector_id || !form.external_id.trim()) { error.value = '请选择 Connector 并填写目标 ID'; return }; try { await command('/api/v2/targets', 'POST', form, auth.csrfToken); form.external_id = ''; form.display_name = ''; await load() } catch (value) { handleError(value) } }
+async function remove(target: Target) { try { await command(`/api/v2/targets/${encodeURIComponent(target.id)}`, 'DELETE', {}, auth.csrfToken); await load() } catch (value) { handleError(value) } }
+async function openDetail(target: Target) { selected.value = target; detailOpen.value = true; error.value = ''; try { const data = await get<{ items: SubscriptionItem[] }>(`/api/v2/targets/${encodeURIComponent(target.id)}/sources`); relations.value = data.items ?? [] } catch (value) { handleError(value) } }
+async function addSubscription(sourceId: string) { if (!selected.value || !sourceId) return; try { await command('/api/v2/subscriptions', 'POST', { source_id: sourceId, target_id: selected.value.id, type: 'dynamic' }, auth.csrfToken); await openDetail(selected.value); await load() } catch (value) { handleError(value) } }
+async function removeSubscription(item: SubscriptionItem) { try { await command(`/api/v2/subscriptions/${encodeURIComponent(item.subscription.id)}`, 'DELETE', {}, auth.csrfToken); if (selected.value) await openDetail(selected.value); await load() } catch (value) { handleError(value) } }
+onMounted(load)
+</script>
+
+<template>
+  <DashboardLayout>
+    <div class="page-heading"><div><p class="eyebrow">TARGETS</p><h1>推送目标</h1><p>Target 只允许群组或频道；私聊目标不会被绑定。</p></div><el-button :loading="loading" @click="load">刷新</el-button></div>
+    <el-alert v-if="error" type="error" :title="error" show-icon :closable="false" />
+    <el-card class="domain-card" shadow="never"><el-form :inline="true" @submit.prevent="create"><el-form-item label="Connector"><el-select v-model="form.connector_id" style="width: 210px"><el-option v-for="item in connectors" :key="item.id" :label="`${item.name} (${item.kind})`" :value="item.id" /></el-select></el-form-item><el-form-item label="类型"><el-select v-model="form.target_type" style="width: 120px"><el-option label="群组" value="group" /><el-option label="频道" value="channel" /></el-select></el-form-item><el-form-item label="外部 ID"><el-input v-model="form.external_id" placeholder="QQ 群号 / 频道 ID" /></el-form-item><el-form-item label="显示名"><el-input v-model="form.display_name" /></el-form-item><el-form-item><el-button type="primary" @click="create">添加 Target</el-button></el-form-item></el-form></el-card>
+    <el-card class="domain-card" shadow="never"><el-table :data="targets" v-loading="loading" row-key="id" @row-click="openDetail"><el-table-column prop="connector_kind" label="Connector" width="130" /><el-table-column prop="target_type" label="类型" width="100" /><el-table-column label="目标" min-width="220"><template #default="scope"><strong>{{ scope.row.display_name || '未命名' }}</strong><br><code>{{ scope.row.external_id }}</code></template></el-table-column><el-table-column prop="status" label="状态" width="130" /><el-table-column prop="source_count" label="来源数" width="90" /><el-table-column label="操作" width="150"><template #default="scope"><el-button link @click.stop="openDetail(scope.row)">详情</el-button><el-button link type="danger" @click.stop="remove(scope.row)">删除</el-button></template></el-table-column></el-table><el-empty v-if="!loading && !targets.length" description="尚未建立 Target" /></el-card>
+    <el-drawer v-model="detailOpen" title="Target 详情" size="min(680px, 94vw)"><template v-if="selected"><div class="detail-meta"><span>{{ selected.display_name || selected.external_id }} · {{ selected.target_type }}</span><code>{{ selected.id }}</code><small>{{ selected.status }}</small></div><el-divider content-position="left">添加 Source Subscription</el-divider><el-select placeholder="选择监控来源" style="width: 100%" @change="addSubscription"><el-option v-for="source in sources" :key="source.id" :label="`${source.display_name || source.external_id} · ${source.platform}`" :value="source.id" /></el-select><el-divider content-position="left">Target → Sources</el-divider><el-empty v-if="!relations.length" description="暂无订阅" /><div v-for="item in relations" :key="item.subscription.id" class="relation-row"><span>{{ item.source?.display_name || item.source?.external_id }}</span><code>{{ item.subscription.legacy_key }}</code><el-button link type="danger" @click="removeSubscription(item)">移除</el-button></div></template></el-drawer>
+  </DashboardLayout>
+</template>

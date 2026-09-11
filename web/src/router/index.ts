@@ -5,6 +5,9 @@ import LoginView from '../views/LoginView.vue'
 import OverviewView from '../views/OverviewView.vue'
 import AboutView from '../views/AboutView.vue'
 import ObservationsView from '../views/ObservationsView.vue'
+import SourcesView from '../views/SourcesView.vue'
+import TargetsView from '../views/TargetsView.vue'
+import ConnectorsView from '../views/ConnectorsView.vue'
 
 const router = createRouter({
   history: createWebHistory('/'),
@@ -14,6 +17,9 @@ const router = createRouter({
     { path: '/login', name: 'login', component: LoginView },
     { path: '/overview', name: 'overview', component: OverviewView, meta: { requiresAuth: true } },
     { path: '/observations', name: 'observations', component: ObservationsView, meta: { requiresAuth: true } },
+    { path: '/sources', name: 'sources', component: SourcesView, meta: { requiresAuth: true } },
+    { path: '/targets', name: 'targets', component: TargetsView, meta: { requiresAuth: true } },
+    { path: '/connectors', name: 'connectors', component: ConnectorsView, meta: { requiresAuth: true } },
     { path: '/about', name: 'about', component: AboutView, meta: { requiresAuth: true } },
   ],
 })

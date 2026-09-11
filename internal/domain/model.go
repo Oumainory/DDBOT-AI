@@ -107,11 +107,18 @@ type MediaReference struct {
 }
 
 type Source struct {
-	ID         string   `json:"id"`
-	Platform   Platform `json:"platform"`
-	ExternalID string   `json:"external_id"`
-	Name       string   `json:"name,omitempty"`
-	URL        string   `json:"url,omitempty"`
+	ID           string   `json:"id"`
+	Platform     Platform `json:"platform"`
+	ExternalID   string   `json:"external_id"`
+	Name         string   `json:"name,omitempty"`
+	URL          string   `json:"url,omitempty"`
+	Handle       string   `json:"handle,omitempty"`
+	DisplayName  string   `json:"display_name,omitempty"`
+	CanonicalURL string   `json:"canonical_url,omitempty"`
+	Status       string   `json:"status,omitempty"`
+	MetadataJSON string   `json:"metadata_json,omitempty"`
+	CreatedAt    int64    `json:"created_at,omitempty"`
+	UpdatedAt    int64    `json:"updated_at,omitempty"`
 }
 
 type Target struct {
@@ -121,6 +128,155 @@ type Target struct {
 	ExternalID     string     `json:"external_id"`
 	Name           string     `json:"name,omitempty"`
 	LegacyRouteKey string     `json:"legacy_route_key,omitempty"`
+	DisplayName    string     `json:"display_name,omitempty"`
+	MetadataJSON   string     `json:"metadata_json,omitempty"`
+	Status         string     `json:"status,omitempty"`
+	CreatedAt      int64      `json:"created_at,omitempty"`
+	UpdatedAt      int64      `json:"updated_at,omitempty"`
+}
+
+const (
+	SourceActive      = "active"
+	SourceUnresolved  = "unresolved"
+	SourceUnavailable = "unavailable"
+
+	ConnectorOneBot   = "onebot"
+	ConnectorSatori   = "satori"
+	ConnectorTelegram = "telegram"
+	ConnectorMain     = "main"
+	ConnectorExtra    = "extra"
+
+	ConnectorActive      = "active"
+	ConnectorUnavailable = "unavailable"
+	ConnectorDisabled    = "disabled"
+	ConnectorAmbiguous   = "ambiguous"
+
+	TargetResolved    = "resolved"
+	TargetAmbiguous   = "ambiguous"
+	TargetUnresolved  = "unresolved"
+	TargetUnavailable = "unavailable"
+
+	ProjectionActive     = "active"
+	ProjectionStale      = "stale"
+	ProjectionDrift      = "drift"
+	ProjectionDegraded   = "degraded"
+	ProjectionUnresolved = "unresolved"
+)
+
+var (
+	ErrInvalidDomain        = errors.New("domain: invalid domain value")
+	ErrSourceInUse          = errors.New("domain: source_in_use")
+	ErrTargetInUse          = errors.New("domain: target_in_use")
+	ErrMigrationRequired    = errors.New("domain: migration_required")
+	ErrTopologyInvalid      = errors.New("domain: invalid connector topology")
+	ErrAmbiguousTarget      = errors.New("domain: ambiguous target")
+	ErrDiscoveryUnavailable = errors.New("domain: discovery unavailable")
+)
+
+// Connector describes a publisher integration. CredentialID is only a
+// reference into the Secret Store; it is never a plaintext credential.
+type Connector struct {
+	ID           string `json:"id"`
+	Kind         string `json:"kind"`
+	Name         string `json:"name"`
+	Role         string `json:"role"`
+	Enabled      bool   `json:"enabled"`
+	Status       string `json:"status"`
+	Endpoint     string `json:"endpoint,omitempty"`
+	CredentialID string `json:"credential_id,omitempty"`
+	ConfigJSON   string `json:"config_json,omitempty"`
+	MetadataJSON string `json:"metadata_json,omitempty"`
+	CreatedAt    int64  `json:"created_at,omitempty"`
+	UpdatedAt    int64  `json:"updated_at,omitempty"`
+}
+
+type SubscriptionProjection struct {
+	ID                        string `json:"id"`
+	SourceID                  string `json:"source_id"`
+	TargetID                  string `json:"target_id"`
+	LegacyKey                 string `json:"legacy_key"`
+	Enabled                   bool   `json:"enabled"`
+	LegacyOptionsSnapshotJSON string `json:"legacy_options_snapshot_json,omitempty"`
+	ProjectionStatus          string `json:"projection_status"`
+	ProjectedAt               int64  `json:"projected_at"`
+}
+
+// LegacySubscription is a lossless, serializable snapshot of a Legacy BuntDB
+// subscription used solely to rebuild the SQLite projection. It is not a
+// replacement for Legacy's source of truth.
+type LegacySubscription struct {
+	Platform          string `json:"platform"`
+	ExternalID        string `json:"external_id"`
+	DisplayName       string `json:"display_name,omitempty"`
+	CanonicalURL      string `json:"canonical_url,omitempty"`
+	SubscriptionType  string `json:"subscription_type"`
+	TargetType        string `json:"target_type"`
+	TargetExternalID  string `json:"target_external_id"`
+	TargetDisplayName string `json:"target_display_name,omitempty"`
+	Enabled           bool   `json:"enabled"`
+	LegacyKey         string `json:"legacy_key"`
+	OptionsJSON       string `json:"options_json,omitempty"`
+}
+
+func NormalizePlatform(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func ValidateSource(source Source) error {
+	if source.ID != "" && !IsUUIDv7(source.ID) {
+		return fmt.Errorf("%w: source identity", ErrInvalidDomain)
+	}
+	if NormalizePlatform(string(source.Platform)) == "" || strings.TrimSpace(source.ExternalID) == "" {
+		return fmt.Errorf("%w: source identity", ErrInvalidDomain)
+	}
+	if source.Status == "" {
+		return nil
+	}
+	switch source.Status {
+	case SourceActive, SourceUnresolved, SourceUnavailable:
+	default:
+		return fmt.Errorf("%w: source status", ErrInvalidDomain)
+	}
+	return nil
+}
+
+func ValidateTarget(target Target) error {
+	if target.ID != "" && !IsUUIDv7(target.ID) {
+		return fmt.Errorf("%w: target identity", ErrInvalidDomain)
+	}
+	if target.ConnectorID == "" || strings.TrimSpace(target.ExternalID) == "" {
+		return fmt.Errorf("%w: target identity", ErrInvalidDomain)
+	}
+	if target.TargetType != TargetGroup && target.TargetType != TargetChannel {
+		return fmt.Errorf("%w: target type", ErrInvalidDomain)
+	}
+	if target.Status == "" {
+		return nil
+	}
+	switch target.Status {
+	case TargetResolved, TargetAmbiguous, TargetUnresolved, TargetUnavailable:
+	default:
+		return fmt.Errorf("%w: target status", ErrInvalidDomain)
+	}
+	return nil
+}
+
+func ValidateConnector(connector Connector) error {
+	if connector.ID != "" && !IsUUIDv7(connector.ID) {
+		return fmt.Errorf("%w: connector identity", ErrInvalidDomain)
+	}
+	if strings.TrimSpace(connector.Name) == "" {
+		return fmt.Errorf("%w: connector identity", ErrInvalidDomain)
+	}
+	switch connector.Kind {
+	case ConnectorOneBot, ConnectorSatori, ConnectorTelegram:
+	default:
+		return fmt.Errorf("%w: connector kind", ErrInvalidDomain)
+	}
+	if connector.Role != ConnectorMain && connector.Role != ConnectorExtra {
+		return fmt.Errorf("%w: connector role", ErrInvalidDomain)
+	}
+	return nil
 }
 
 // IdentityKey is the storage uniqueness key. Target type is intentionally

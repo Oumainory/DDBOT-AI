@@ -13,6 +13,7 @@ import (
 	"github.com/cnxysoft/DDBOT-WSa/lsp/interfaces"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/permission"
+	"github.com/cnxysoft/DDBOT-WSa/lsp/subscription"
 	"github.com/cnxysoft/DDBOT-WSa/utils"
 	"github.com/sirupsen/logrus"
 	"github.com/tidwall/buntdb"
@@ -241,10 +242,11 @@ func IWatch(c *MessageContext, groupCode int64, id string, site string, watchTyp
 		return
 	}
 	log = log.WithField("mid", mid)
+	legacyService := subscription.NewService()
 	if remove {
 		// unwatch
 		userInfo, _ := cm.Get(mid)
-		if _, err := cm.Remove(c, groupCode, mid, watchType); err != nil {
+		if _, err := legacyService.UnsubscribeWithMessageContext(c, subscription.Request{Site: site, ID: id, Type: watchType.String(), GroupCode: groupCode}); err != nil {
 			if err == buntdb.ErrNotFound {
 				c.TextReply(fmt.Sprintf("unwatch失败 - 未找到该用户"))
 			} else {
@@ -261,7 +263,7 @@ func IWatch(c *MessageContext, groupCode int64, id string, site string, watchTyp
 		return
 	}
 	// watch
-	userInfo, err := cm.Add(c, groupCode, mid, watchType)
+	userInfo, err := legacyService.SubscribeWithMessageContext(c, subscription.Request{Site: site, ID: id, Type: watchType.String(), GroupCode: groupCode})
 	if err != nil {
 		if err == concern.ErrAlreadyExists {
 			log.Errorf("user already watched")

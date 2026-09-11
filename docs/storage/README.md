@@ -6,7 +6,7 @@ Phase 0 只固定最容易被错误实现的持久化契约。Core 是 SQLite �
 SQL。已发布的 migration（尤其 `001_core.sql`）是 immutable；后续修正必须新增有序、独立
 checksum 的 migration。
 
-当前 v6 schema 固定五类平台状态：
+当前 v7 schema 固定六类平台状态：
 
 - `idempotency_records` 保存主体、Key、uppercase method、concrete path、canonical query、body SHA-256、command type、显式 execution status、sanitized response、创建/完成/过期时间；原始敏感 request body 永不落库；
 - `delivery_migration_holds` 保存 `migration_held` 重启所需的 delivery/event、独立 route decision identity、route snapshot、logical target 和 message snapshot。
@@ -17,6 +17,9 @@ checksum 的 migration。
 - `observed_events`、`route_observations` 和 `delivery_observations` 保存 P2A 的旁路观察事实；
   只写固定 allowlist 的 public snapshot、路由结果和真实 Messenger 结果，不参与 Legacy
   过滤或投递决定，也不是通用重试队列。
+- `sources`、`connectors`、`targets` 和 `subscription_projections` 保存 P3A 可重建的
+  Domain 元数据；BuntDB 仍是 Legacy Subscription 唯一权威源。P3A 的完整约束见
+  [`docs/phase3/P3A_DOMAIN_PROJECTION_DISCOVERY.md`](../phase3/P3A_DOMAIN_PROJECTION_DISCOVERY.md)。
 
 P1C 的 Master Key 文件格式、AAD、Recovery 与 health/readiness 契约见
 [`docs/phase1/P1C_SECRET_STORE.md`](../phase1/P1C_SECRET_STORE.md)。

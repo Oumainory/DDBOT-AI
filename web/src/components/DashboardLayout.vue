@@ -21,6 +21,9 @@ async function logout() {
       <nav class="nav-list" aria-label="主导航">
         <RouterLink :class="['nav-item', { active: current === 'overview' }]" to="/overview">Overview</RouterLink>
         <RouterLink :class="['nav-item', { active: current === 'observations' }]" to="/observations">Observations</RouterLink>
+        <RouterLink :class="['nav-item', { active: current === 'sources' }]" to="/sources">Sources</RouterLink>
+        <RouterLink :class="['nav-item', { active: current === 'targets' }]" to="/targets">Targets</RouterLink>
+        <RouterLink :class="['nav-item', { active: current === 'connectors' }]" to="/connectors">Connectors</RouterLink>
         <RouterLink :class="['nav-item', { active: current === 'about' }]" to="/about">About</RouterLink>
       </nav>
     </aside>

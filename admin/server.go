@@ -17,6 +17,7 @@ import (
 	"github.com/cnxysoft/DDBOT-WSa/internal/adminapi"
 	"github.com/cnxysoft/DDBOT-WSa/internal/auth"
 	"github.com/cnxysoft/DDBOT-WSa/internal/buildinfo"
+	"github.com/cnxysoft/DDBOT-WSa/internal/idempotency"
 	"github.com/cnxysoft/DDBOT-WSa/internal/observation"
 	"github.com/cnxysoft/DDBOT-WSa/internal/origin"
 	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
@@ -27,6 +28,7 @@ import (
 	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
+	"github.com/cnxysoft/DDBOT-WSa/lsp/subscription"
 	"github.com/ghodss/yaml"
 	"github.com/sirupsen/logrus"
 	"go.uber.org/atomic"
@@ -308,6 +310,7 @@ type platformHTTP struct {
 	bootstrapErr        error
 	observationRecorder *observation.Recorder
 	restoreObservation  func()
+	domainRepository    *platformdb.DomainRepository
 }
 
 func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP, *platformdb.Store, error) {
@@ -331,10 +334,13 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 	}
 	var observationRepository *platformdb.ObservationRepository
 	var recorder *observation.Recorder
+	var domainRepository *platformdb.DomainRepository
 	if store != nil {
 		observationRepository = platformdb.NewObservationRepository(store)
 		recorder = observation.NewRecorder(observationRepository, observation.Config{})
+		domainRepository = platformdb.NewDomainRepository(store)
 	}
+	legacySubscriptions := subscription.NewService()
 	authService := auth.NewService(repository, auth.Config{})
 	apiServer, err := adminapi.NewServer(adminapi.Config{
 		Auth:                  authService,
@@ -346,6 +352,9 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 		Build:                 buildinfo.Current(),
 		ObservationRepository: observationRepository,
 		ObservationRecorder:   recorder,
+		DomainRepository:      domainRepository,
+		LegacySubscriptions:   legacySubscriptions,
+		Idempotency:           idempotency.NewMemoryStore(idempotency.DefaultRetention),
 	})
 	if err != nil {
 		if recorder != nil {
@@ -370,6 +379,20 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 	if recorder != nil {
 		restoreObservation = observation.Install(recorder)
 	}
+	if domainRepository != nil {
+		// Projection reconciliation is best-effort and asynchronous. It never
+		// blocks Legacy startup or changes BuntDB authority.
+		go func() {
+			records, snapshotErr := legacySubscriptions.Snapshot(context.Background())
+			if snapshotErr != nil {
+				logrus.WithError(snapshotErr).Warn("DDBOT-AI domain projection snapshot unavailable")
+				return
+			}
+			if rebuildErr := domainRepository.RebuildProjection(context.Background(), records); rebuildErr != nil {
+				logrus.WithError(rebuildErr).Warn("DDBOT-AI domain projection reconciliation degraded")
+			}
+		}()
+	}
 	return platformHTTP{
 		handler:             apiServer.Handler(),
 		probe:               probe,
@@ -378,6 +401,7 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 		bootstrapErr:        bootstrapErr,
 		observationRecorder: recorder,
 		restoreObservation:  restoreObservation,
+		domainRepository:    domainRepository,
 	}, store, nil
 }
 
@@ -543,46 +567,10 @@ func (s *Server) handleAddSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 查找对应的 concern
-	var targetConcern concern.Concern
-	for _, c := range concern.ListConcern() {
-		if c.Site() == req.Site {
-			targetConcern = c
-			break
-		}
-	}
-
-	if targetConcern == nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid site"})
-		return
-	}
-
-	// 转换类型
-	var concernType concern_type.Type
-	for _, t := range targetConcern.Types() {
-		if t.String() == req.Type {
-			concernType = t
-			break
-		}
-	}
-
-	if concernType == concern_type.Empty {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid concern type"})
-		return
-	}
-
-	// 添加订阅
-	parsedId, err := targetConcern.ParseId(parseIdToString(req.ID))
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid ID format: " + err.Error()})
-		return
-	}
-
 	ctx := &mockMsgCtx{groupCode: req.GroupCode}
-	_, err = targetConcern.Add(ctx, req.GroupCode, parsedId, concernType)
+	_, err := subscription.NewService().SubscribeWithMessageContext(ctx, subscription.Request{
+		Site: req.Site, ID: parseIdToString(req.ID), Type: req.Type, GroupCode: req.GroupCode,
+	})
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
@@ -602,46 +590,10 @@ func (s *Server) handleRemoveSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 查找对应的 concern
-	var targetConcern concern.Concern
-	for _, c := range concern.ListConcern() {
-		if c.Site() == req.Site {
-			targetConcern = c
-			break
-		}
-	}
-
-	if targetConcern == nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid site"})
-		return
-	}
-
-	// 转换类型
-	var concernType concern_type.Type
-	for _, t := range targetConcern.Types() {
-		if t.String() == req.Type {
-			concernType = t
-			break
-		}
-	}
-
-	if concernType == concern_type.Empty {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid concern type"})
-		return
-	}
-
-	// 删除订阅
-	parsedId, err := targetConcern.ParseId(parseIdToString(req.ID))
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid ID format: " + err.Error()})
-		return
-	}
-
 	ctx := &mockMsgCtx{groupCode: req.GroupCode}
-	_, err = targetConcern.Remove(ctx, req.GroupCode, parsedId, concernType)
+	_, err := subscription.NewService().UnsubscribeWithMessageContext(ctx, subscription.Request{
+		Site: req.Site, ID: parseIdToString(req.ID), Type: req.Type, GroupCode: req.GroupCode,
+	})
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
