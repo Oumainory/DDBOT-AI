@@ -16,6 +16,12 @@ go.sum      text eol=lf
 *.template  text eol=lf
 *.proto     text eol=lf
 *.sh        text eol=lf
+*.ts        text eol=lf
+*.vue       text eol=lf
+*.css       text eol=lf
+*.html      text eol=lf
+*.lock      text eol=lf
+Makefile    text eol=lf
 
 *.ps1       text eol=crlf
 *.bat       text eol=crlf

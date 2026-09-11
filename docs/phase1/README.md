@@ -1,6 +1,6 @@
 # DDBOT-AI Phase 1 — Platform Foundation
 
-状态：**范围已冻结；P1A SQLite Foundation DONE / CLOSED；P1B DONE / CLOSED；P1C DONE / CLOSED；P1D READY**。
+状态：**P1A DONE / CLOSED；P1B DONE / CLOSED；P1C DONE / CLOSED；P1D DONE / CLOSED；P1E READY**。
 
 Phase 1 以 `phase0-baseline`（`2030834d423e8313df4ae7a937aec0f0badbd443`）为稳定锚点，建立 DDBOT-AI 的安全、存储、API 和 Dashboard 基础。Phase 1 不改变 Legacy WSa 的采集、过滤、模板或 OneBot 投递语义；所有新基础设施都必须遵守 [V1 不变量](../architecture/V1_INVARIANTS.md) 和 Phase 0 兼容性门禁。
 
@@ -80,8 +80,9 @@ Phase 0 中已经存在的 `ClassifierRelease`、Policy、Migration Snapshot 等
 
 Phase 1 的逐条验收条件见 [ACCEPTANCE.md](./ACCEPTANCE.md)。
 
-当前已完成 [P1C — Secret Store Foundation](./P1C_SECRET_STORE.md)。P1A 的 SQLite
+当前已完成 [P1C — Secret Store Foundation](./P1C_SECRET_STORE.md) 和 [P1D — API + Vue Dashboard Shell](./P1D_API_VUE_SHELL.md)。P1A 的 SQLite
 owner、ordered migration、pre-migration backup 和 health/readiness 基础，以及 P1B 的
 Admin Bootstrap/Auth 保持冻结；P1C 只接入 AES-256-GCM Secret Store、Master Key
-生命周期、Recovery 和健康检查，没有进入完整 API、Vue、Connector 或 AI runtime。
-下一切片为 P1D API 与 Dashboard Shell。
+生命周期、Recovery 和健康检查。P1D 增加了 `/api/v2` authoritative shell、Overview/About、
+Vue/Pinia/Router Dashboard 和 Go embed.FS 静态服务，没有进入 Connector 或 AI runtime。
+下一切片为 P1E 最终发布门禁。

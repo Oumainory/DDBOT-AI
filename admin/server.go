@@ -14,13 +14,15 @@ import (
 
 	"github.com/Sora233/MiraiGo-Template/config"
 	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	"github.com/cnxysoft/DDBOT-WSa/internal/adminauth"
+	"github.com/cnxysoft/DDBOT-WSa/internal/adminapi"
 	"github.com/cnxysoft/DDBOT-WSa/internal/auth"
+	"github.com/cnxysoft/DDBOT-WSa/internal/buildinfo"
 	"github.com/cnxysoft/DDBOT-WSa/internal/origin"
 	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
 	"github.com/cnxysoft/DDBOT-WSa/internal/runtimeconfig"
 	"github.com/cnxysoft/DDBOT-WSa/internal/secretstore"
 	"github.com/cnxysoft/DDBOT-WSa/internal/session"
+	"github.com/cnxysoft/DDBOT-WSa/internal/webui"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
@@ -229,7 +231,7 @@ func start(online *atomic.Bool, alive *atomic.Bool, platform *PlatformConfig) (*
 
 	mux := http.NewServeMux()
 	if platform != nil {
-		platformHTTP, store, err := newPlatformHTTP(*platform)
+		platformHTTP, store, err := newPlatformHTTP(*platform, online)
 		if err != nil {
 			return nil, err
 		}
@@ -237,6 +239,9 @@ func start(online *atomic.Bool, alive *atomic.Bool, platform *PlatformConfig) (*
 		mux.Handle("/api/v2/", platformHTTP.handler)
 		mux.Handle("/healthz", platformHTTP.probe.Healthz())
 		mux.Handle("/readyz", platformHTTP.probe.Readyz())
+		// SPA fallback is registered last and is narrower than all legacy/API
+		// routes. The webui handler itself also refuses API/probe paths.
+		mux.Handle("/", webui.Handler())
 		if platformHTTP.bootstrap.Created {
 			// This is the only raw setup-token output boundary. Do not route it
 			// through logrus, API responses, health, or error envelopes.
@@ -298,7 +303,7 @@ type platformHTTP struct {
 	bootstrapErr error
 }
 
-func newPlatformHTTP(platform PlatformConfig) (platformHTTP, *platformdb.Store, error) {
+func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP, *platformdb.Store, error) {
 	databasePath := strings.TrimSpace(platform.DatabasePath)
 	if databasePath == "" {
 		databasePath = strings.TrimSpace(os.Getenv("DDBOT_AI_PLATFORM_DB"))
@@ -318,12 +323,14 @@ func newPlatformHTTP(platform PlatformConfig) (platformHTTP, *platformdb.Store, 
 		repository = platformdb.NewAuthRepository(store)
 	}
 	authService := auth.NewService(repository, auth.Config{})
-	authServer, err := adminauth.NewServer(adminauth.Config{
+	apiServer, err := adminapi.NewServer(adminapi.Config{
 		Auth:          authService,
 		Probe:         &probe,
 		Origin:        platform.Origin,
 		RequireOrigin: platform.RequireOrigin,
 		Cookie:        platform.Cookie,
+		LegacyOnline:  online,
+		Build:         buildinfo.Current(),
 	})
 	if err != nil {
 		if store != nil {
@@ -331,7 +338,7 @@ func newPlatformHTTP(platform PlatformConfig) (platformHTTP, *platformdb.Store, 
 		}
 		return platformHTTP{}, nil, err
 	}
-	result, bootstrapErr := authServer.Bootstrap(context.Background())
+	result, bootstrapErr := authService.Bootstrap(context.Background())
 	if openErr != nil {
 		// Keep the detailed owner error in the process log boundary while the
 		// probe and HTTP error envelope expose only stable non-sensitive codes.
@@ -342,7 +349,7 @@ func newPlatformHTTP(platform PlatformConfig) (platformHTTP, *platformdb.Store, 
 		bootstrapErr = auth.ErrUnavailable
 	}
 	return platformHTTP{
-		handler:      authServer.Handler(),
+		handler:      apiServer.Handler(),
 		probe:        probe,
 		secretStore:  secretService,
 		bootstrap:    result,

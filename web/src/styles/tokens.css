@@ -1,0 +1,11 @@
+:root {
+  --color-ink: #17202a;
+  --color-muted: #68737d;
+  --color-border: #e5e9ee;
+  --color-surface: #ffffff;
+  --color-surface-soft: #f5f7f9;
+  --color-brand: #0f766e;
+  --color-brand-soft: #e5f5f2;
+  --radius-card: 14px;
+  --shadow-card: 0 8px 30px rgba(21, 35, 49, 0.06);
+}

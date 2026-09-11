@@ -16,6 +16,41 @@ env:
   BASELINE_COMMIT: 'a6364e7182ec4eee93dd78e09fe7a7efd92bffab'
 
 jobs:
+  frontend:
+    name: Frontend typecheck, tests and deterministic build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.14.0'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Typecheck frontend
+        working-directory: web
+        run: npm run typecheck
+
+      - name: Test frontend
+        working-directory: web
+        run: npm run test
+
+      - name: Build frontend
+        working-directory: web
+        run: npm run build
+
+      - name: Verify committed embedded artifact
+        run: git diff --exit-code -- internal/webui/dist
+
   test:
     name: Tests and compatibility inventory
     runs-on: ubuntu-latest
@@ -145,7 +180,7 @@ jobs:
 
   pure-go-build:
     name: Pure Go build (${{ matrix.goos }}/${{ matrix.goarch }})
-    needs: [test, baseline, compatibility-manifest, compatibility-diff]
+    needs: [frontend, test, baseline, compatibility-manifest, compatibility-diff]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -187,14 +222,14 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: go build -trimpath -buildmode=archive -o "build/platformdb-${GOOS}-${GOARCH}.a" ./internal/platformdb
 
-      - name: Compile P1C secret and auth foundations without CGO
+      - name: Compile platform foundations without CGO
         env:
           CGO_ENABLED: '0'
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
           set -euo pipefail
-          for package in secretstore auth adminauth session csrf origin; do
+          for package in secretstore auth adminauth adminapi buildinfo webui session csrf origin; do
             go build -trimpath -buildmode=archive -o "build/${package}-${GOOS}-${GOARCH}.a" "./internal/${package}"
           done
 

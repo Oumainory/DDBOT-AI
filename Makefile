@@ -1,7 +1,7 @@
 BUILD_TIME := $(shell date --rfc-3339=seconds)
 COMMIT_ID := $(shell git rev-parse HEAD)
 
-LDFLAGS = -X "github.com/cnxysoft/DDBOT-WSa/lsp.BuildTime='"$(BUILD_TIME)"'" -X "github.com/cnxysoft/DDBOT-WSa/lsp.CommitId='"$(COMMIT_ID)"'"
+LDFLAGS = -X "github.com/cnxysoft/DDBOT-WSa/lsp.BuildTime='"$(BUILD_TIME)"'" -X "github.com/cnxysoft/DDBOT-WSa/lsp.CommitId='"$(COMMIT_ID)"'" -X "github.com/cnxysoft/DDBOT-WSa/internal/buildinfo.BuildTime='"$(BUILD_TIME)"'" -X "github.com/cnxysoft/DDBOT-WSa/internal/buildinfo.Commit='"$(COMMIT_ID)"'"
 
 SRC := $(shell find . -type f -name '*.go') lsp/template/default/*
 PROTO := $(shell find . -type f -name '*.proto')
