@@ -69,7 +69,17 @@ jobs:
       - name: Run tests without CGO
         env:
           CGO_ENABLED: '0'
-        run: go test -v -coverprofile=profile.cov ./...
+        run: |
+          set -o pipefail
+          go test -v -coverprofile=profile.cov ./... 2>&1 | tee go-test.log
+
+      - name: Upload Go test log
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-test-log
+          path: go-test.log
+          if-no-files-found: ignore
 
       - name: Run go vet without CGO
         env:
