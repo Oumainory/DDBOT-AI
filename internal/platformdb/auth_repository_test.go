@@ -2,6 +2,7 @@ package platformdb
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"sync"
@@ -286,5 +287,74 @@ func TestAuthRepositorySessionStoresHashAndEnforcesExpiryAndRevocation(t *testin
 	}
 	if _, err := repository.LookupSession(ctx, record.SessionIDHash, now.Add(21*time.Minute)); !errors.Is(err, ErrSessionRevoked) {
 		t.Fatalf("revoked session error = %v", err)
+	}
+}
+
+func TestAuthRepositoryResetAdministratorPasswordRevokesSessionsAtomically(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1700000000, 0).UTC()
+	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "password-reset.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	repository := NewAuthRepository(store)
+	setupHash := session.HashToken("setup")
+	if created, err := repository.EnsureSetupToken(ctx, setupHash, now, now.Add(time.Hour)); err != nil || !created {
+		t.Fatalf("EnsureSetupToken = %v, %v", created, err)
+	}
+	if _, err := repository.CreateAdministrator(ctx, setupHash, "admin_1", "admin", "old-hash", now); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{"session-one", "session-two"} {
+		if err := repository.CreateSession(ctx, SessionRecord{
+			SessionIDHash: session.HashToken(raw), AdminID: "admin_1", CreatedAt: now,
+			LastSeenAt: now, ExpiresAt: now.Add(time.Hour), CSRFSecret: "csrf-" + raw,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resetAt := now.Add(10 * time.Minute)
+	if err := repository.ResetAdministratorPassword(ctx, "new-hash", resetAt); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := repository.AdministratorByID(ctx, "admin_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if admin.Username != "admin" || admin.PasswordHash != "new-hash" || !admin.PasswordChangedAt.Equal(resetAt) || !admin.UpdatedAt.Equal(resetAt) {
+		t.Fatalf("administrator after reset = %#v", admin)
+	}
+	for _, raw := range []string{"session-one", "session-two"} {
+		if _, err := repository.LookupSession(ctx, session.HashToken(raw), resetAt); !errors.Is(err, ErrSessionRevoked) {
+			t.Fatalf("session %q after reset = %v, want ErrSessionRevoked", raw, err)
+		}
+	}
+	var completed int
+	if err := store.db.QueryRowContext(ctx, "SELECT completed FROM setup_state WHERE singleton = 1").Scan(&completed); err != nil {
+		t.Fatal(err)
+	}
+	if completed != 1 {
+		t.Fatalf("setup completed = %d, want 1", completed)
+	}
+	var consumedAt sql.NullInt64
+	if err := store.db.QueryRowContext(ctx, "SELECT consumed_at FROM setup_tokens WHERE singleton = 1").Scan(&consumedAt); err != nil {
+		t.Fatal(err)
+	}
+	if !consumedAt.Valid {
+		t.Fatal("password reset reopened setup token")
+	}
+}
+
+func TestAuthRepositoryResetAdministratorPasswordRejectsInvalidState(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "password-reset-invalid.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	repository := NewAuthRepository(store)
+	if err := repository.ResetAdministratorPassword(ctx, "new-hash", time.Unix(1700000000, 0)); !errors.Is(err, ErrAuthInvariant) {
+		t.Fatalf("reset before setup = %v, want ErrAuthInvariant", err)
 	}
 }

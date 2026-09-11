@@ -1,10 +1,17 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"strings"
+
 	"github.com/Sora233/MiraiGo-Template/config"
 	"github.com/alecthomas/kong"
 	"github.com/cnxysoft/DDBOT-WSa"
+	"github.com/cnxysoft/DDBOT-WSa/internal/adminreset"
+	"github.com/cnxysoft/DDBOT-WSa/internal/auth"
+	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
 	_ "github.com/cnxysoft/DDBOT-WSa/logging"
 	"github.com/cnxysoft/DDBOT-WSa/lsp"
 	_ "github.com/cnxysoft/DDBOT-WSa/lsp/acfun"
@@ -23,19 +30,30 @@ import (
 	"github.com/cnxysoft/DDBOT-WSa/warn"
 	"net/http"
 	_ "net/http/pprof"
-	"os"
 )
+
+type adminCommands struct {
+	ResetPassword struct{} `cmd:"reset-password" help:"Reset the local administrator password"`
+}
 
 func main() {
 	var cli struct {
-		Play         bool  `optional:"" help:"运行play函数，适用于测试和开发"`
-		Debug        bool  `optional:"" help:"启动debug模式"`
-		Online       bool  `optional:"" help:"跳过等待bot上线，直接启动订阅系统（调试用）"`
-		SetAdmin     int64 `optional:"" xor:"c" help:"设置admin权限"`
-		Version      bool  `optional:"" xor:"c" short:"v" help:"打印版本信息"`
-		SyncBilibili bool  `optional:"" xor:"c" help:"同步b站帐号的关注，适用于更换或迁移b站帐号的时候"`
+		Admin        adminCommands `cmd:"" help:"Local administrator maintenance"`
+		Play         bool          `optional:"" help:"运行play函数，适用于测试和开发"`
+		Debug        bool          `optional:"" help:"启动debug模式"`
+		Online       bool          `optional:"" help:"跳过等待bot上线，直接启动订阅系统（调试用）"`
+		SetAdmin     int64         `optional:"" xor:"c" help:"设置admin权限"`
+		Version      bool          `optional:"" xor:"c" short:"v" help:"打印版本信息"`
+		SyncBilibili bool          `optional:"" xor:"c" help:"同步b站帐号的关注，适用于更换或迁移b站帐号的时候"`
 	}
-	kong.Parse(&cli)
+	ctx := kong.Parse(&cli)
+	if ctx.Command() == "admin reset-password" {
+		if err := runAdminPasswordReset(); err != nil {
+			fmt.Fprintln(os.Stderr, "administrator password reset failed")
+			os.Exit(1)
+		}
+		return
+	}
 
 	if cli.Version {
 		fmt.Println("Product: DDBOT-AI")
@@ -108,4 +126,24 @@ func main() {
 	DDBOT.SetUpLog()
 
 	DDBOT.Run()
+}
+
+func runAdminPasswordReset() error {
+	databasePath := strings.TrimSpace(os.Getenv("DDBOT_AI_PLATFORM_DB"))
+	if databasePath == "" {
+		databasePath = "ddbot-ai.sqlite"
+	}
+	ctx := context.Background()
+	store, err := platformdb.Open(ctx, platformdb.Config{Path: databasePath})
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	service := auth.NewService(platformdb.NewAuthRepository(store), auth.Config{})
+	return adminreset.Run(ctx, service, os.Stderr, func() (string, error) {
+		password, readErr := adminreset.ReadPassword(os.Stdin)
+		_, _ = fmt.Fprintln(os.Stderr)
+		return string(password), readErr
+	})
 }

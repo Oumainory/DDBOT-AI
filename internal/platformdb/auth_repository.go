@@ -329,6 +329,85 @@ VALUES (?, 1, ?, ?, ?, ?, ?, 0)`, adminID, username, passwordHash, stamp, stamp,
 	}, nil
 }
 
+// ResetAdministratorPassword replaces the single administrator password in
+// one transaction and revokes every currently active session. It is a local
+// recovery operation, not a setup operation: setup_state and setup_tokens are
+// never reopened or changed here.
+func (r *AuthRepository) ResetAdministratorPassword(ctx context.Context, passwordHash string, now time.Time) error {
+	if err := r.requireStore(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(passwordHash) == "" {
+		return ErrAuthInvariant
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platformdb: begin administrator password reset: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	var completed int
+	if err := tx.QueryRowContext(ctx, "SELECT completed FROM setup_state WHERE singleton = 1").Scan(&completed); err != nil {
+		return fmt.Errorf("platformdb: read setup state for password reset: %w", err)
+	}
+	if completed != 1 {
+		return ErrAuthInvariant
+	}
+	var adminCount int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM administrators").Scan(&adminCount); err != nil {
+		return fmt.Errorf("platformdb: count administrators for password reset: %w", err)
+	}
+	if adminCount == 0 {
+		return ErrAdminNotFound
+	}
+	if adminCount != 1 {
+		return fmt.Errorf("%w: administrator_count=%d", ErrAuthInvariant, adminCount)
+	}
+	var adminID string
+	if err := tx.QueryRowContext(ctx, "SELECT id FROM administrators WHERE singleton = 1").Scan(&adminID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrAdminNotFound
+		}
+		return fmt.Errorf("platformdb: read administrator for password reset: %w", err)
+	}
+
+	stamp := now.UTC().Unix()
+	result, err := tx.ExecContext(ctx, `
+UPDATE administrators
+SET password_hash = ?, updated_at = ?, password_changed_at = ?
+WHERE singleton = 1`, passwordHash, stamp, stamp)
+	if err != nil {
+		return fmt.Errorf("platformdb: update administrator password: %w", err)
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("platformdb: count password reset rows: %w", err)
+	} else if affected != 1 {
+		return ErrAdminNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `
+UPDATE sessions
+SET revoked_at = COALESCE(revoked_at, ?)
+WHERE admin_id = ? AND revoked_at IS NULL`, stamp, adminID); err != nil {
+		return fmt.Errorf("platformdb: revoke administrator sessions: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("platformdb: commit administrator password reset: %w", err)
+	}
+	committed = true
+	return nil
+}
+
 func (r *AuthRepository) AdministratorByUsername(ctx context.Context, username string) (AdministratorRecord, error) {
 	if err := r.requireStore(); err != nil {
 		return AdministratorRecord{}, err

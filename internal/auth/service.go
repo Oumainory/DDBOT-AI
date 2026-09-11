@@ -165,6 +165,24 @@ func (s *Service) Setup(ctx context.Context, setupToken, username, password stri
 	return SetupResult{Admin: admin}, nil
 }
 
+// ResetAdministratorPassword is intentionally separate from Setup. It keeps
+// setup permanently completed, derives a fresh Argon2id hash through the same
+// injectable boundary used by setup, and lets the repository atomically
+// replace the hash while revoking existing sessions.
+func (s *Service) ResetAdministratorPassword(ctx context.Context, password string) error {
+	if s == nil || s.repo == nil {
+		return ErrUnavailable
+	}
+	if err := ValidatePassword(password); err != nil {
+		return err
+	}
+	passwordHash, err := s.passwordHasher(password)
+	if err != nil {
+		return err
+	}
+	return s.repo.ResetAdministratorPassword(ctx, passwordHash, s.now())
+}
+
 func (s *Service) Login(ctx context.Context, username, password, rateKey, userAgent string) (LoginResult, error) {
 	if s == nil || s.repo == nil {
 		return LoginResult{}, ErrUnavailable
