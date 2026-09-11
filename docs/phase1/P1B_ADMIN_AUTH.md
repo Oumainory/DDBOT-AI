@@ -68,6 +68,22 @@ Precheck 只读取当前 setup state、管理员数量和 Setup Token row，使�
 两个并发的有效请求可以都通过 precheck 并执行一次密码派生，但只有一个事务能够
 提交。最终只会创建一个管理员、消费一次 token，另一个请求稳定失败。
 
+## Local password recovery
+
+管理员忘记密码时，部署者可以在本机执行：
+
+```text
+ddbot-ai admin reset-password
+```
+
+这是一个只打开 Platform SQLite 的本地命令，不启动 Legacy BuntDB、Dashboard
+HTTP、Connector 或 AI runtime。命令在 stdin 上隐藏读取并确认新密码，使用相同的
+Argon2id policy，然后由一个 SQLite transaction 更新唯一管理员的
+`password_hash`/时间字段并撤销该管理员所有仍有效的 Session。它不会修改
+`setup_state`、重新打开 Setup Token 或创建第二个管理员。数据库路径使用
+`DDBOT_AI_PLATFORM_DB`，未设置时为当前目录的 `ddbot-ai.sqlite`；密码、hash、Session
+和数据库路径不会写入命令输出。
+
 ## Password 与 Login
 
 密码使用标准 Argon2id encoded hash：
