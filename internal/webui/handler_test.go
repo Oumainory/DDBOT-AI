@@ -19,7 +19,7 @@ func testAssets() fs.FS {
 
 func TestSPAFallbackAndAssetRules(t *testing.T) {
 	handler := NewHandler(testAssets())
-	for _, path := range []string{"/", "/index.html", "/setup", "/login", "/overview", "/about"} {
+	for _, path := range []string{"/", "/index.html", "/setup", "/login", "/overview", "/observations", "/about"} {
 		record := httptest.NewRecorder()
 		handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, path, nil))
 		if record.Code != http.StatusOK || !strings.Contains(record.Body.String(), "id=app") || record.Header().Get("Cache-Control") != "no-store" {

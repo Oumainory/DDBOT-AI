@@ -19,11 +19,12 @@ import (
 var embedded embed.FS
 
 var browserRoutes = map[string]struct{}{
-	"/":         {},
-	"/setup":    {},
-	"/login":    {},
-	"/overview": {},
-	"/about":    {},
+	"/":             {},
+	"/setup":        {},
+	"/login":        {},
+	"/overview":     {},
+	"/observations": {},
+	"/about":        {},
 }
 
 func Handler() http.Handler {

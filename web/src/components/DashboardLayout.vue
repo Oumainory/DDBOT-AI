@@ -20,6 +20,7 @@ async function logout() {
       <p class="brand-caption">Platform Foundation</p>
       <nav class="nav-list" aria-label="主导航">
         <RouterLink :class="['nav-item', { active: current === 'overview' }]" to="/overview">Overview</RouterLink>
+        <RouterLink :class="['nav-item', { active: current === 'observations' }]" to="/observations">Observations</RouterLink>
         <RouterLink :class="['nav-item', { active: current === 'about' }]" to="/about">About</RouterLink>
       </nav>
     </aside>

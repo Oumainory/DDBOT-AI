@@ -217,3 +217,97 @@ func TestObservationRepositoryValidationDoesNotPersistPartialFacts(t *testing.T)
 		t.Fatalf("invalid writes changed counts = %d/%d/%d", events, routes, deliveries)
 	}
 }
+
+func TestObservationRepositoryCursorPaginationFiltersAndCounts(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "query.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	repository := NewObservationRepository(store)
+	at := time.Unix(1_700_000_000, 0).UTC()
+	for _, item := range []struct {
+		id, platform, eventType, sourceKind, sourceID string
+	}{
+		{"evt-c", "bilibili", "dynamic", "account", "source-a"},
+		{"evt-b", "bilibili", "dynamic", "account", "source-a"},
+		{"evt-a", "twitter", "tweet", "account", "source-b"},
+	} {
+		if err := repository.InsertObservedEvent(ctx, ObservedEventRecord{
+			ID: item.id, SchemaVersion: 1, Platform: item.platform, EventType: item.eventType,
+			SourceKind: item.sourceKind, SourceExternalID: item.sourceID, ObservedAt: at,
+			ContentFingerprint: strings.Repeat("a", 64), PublicSnapshotJSON: `{"text":"public"}`, CreatedAt: at,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repository.InsertRouteObservation(ctx, RouteObservationRecord{ID: "route-c", EventID: "evt-c", RouteOrdinal: 0, DestinationKind: "qq_group", DestinationExternalID: "1", Outcome: "pass", ReasonCode: "legacy_pass", ObservedAt: at, CreatedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.InsertDeliveryObservation(ctx, DeliveryObservationRecord{ID: "delivery-c", EventID: "evt-c", RouteObservationID: "route-c", ConnectorKind: "onebot", DestinationExternalID: "1", Status: "sent", ResultCode: "sent", ObservedAt: at, CreatedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := repository.ListObservedEvents(ctx, ObservationEventQuery{Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 2 || page.NextCursor == nil || page.Events[0].ID != "evt-c" || page.Events[1].ID != "evt-b" {
+		t.Fatalf("first page = %#v, cursor=%#v", page.Events, page.NextCursor)
+	}
+	if page.Events[0].RouteCount != 1 || page.Events[0].DeliveryCount != 1 || page.Events[0].FinalDeliveryStatus != "sent" {
+		t.Fatalf("event aggregates = %#v", page.Events[0])
+	}
+	second, err := repository.ListObservedEvents(ctx, ObservationEventQuery{Limit: 2, Cursor: page.NextCursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Events) != 1 || second.Events[0].ID != "evt-a" || second.NextCursor != nil {
+		t.Fatalf("second page = %#v, cursor=%#v", second.Events, second.NextCursor)
+	}
+	filtered, err := repository.ListObservedEvents(ctx, ObservationEventQuery{Limit: 50, Platform: "bilibili", EventType: "dynamic", SourceExternalID: "source-a"})
+	if err != nil || len(filtered.Events) != 2 {
+		t.Fatalf("filtered page = %#v, err=%v", filtered, err)
+	}
+	from := at.Add(-time.Second)
+	to := at.Add(time.Second)
+	timeFiltered, err := repository.ListObservedEvents(ctx, ObservationEventQuery{Limit: 50, From: &from, To: &to})
+	if err != nil || len(timeFiltered.Events) != 3 {
+		t.Fatalf("time filtered page = %#v, err=%v", timeFiltered, err)
+	}
+	if _, err := repository.ListObservedEvents(ctx, ObservationEventQuery{Limit: MaxObservationPageSize + 1}); !errors.Is(err, ErrObservationInvalidQuery) {
+		t.Fatalf("invalid limit error = %v", err)
+	}
+	recent, err := repository.ObservationRecentCounts(ctx, at.Add(time.Hour))
+	if err != nil || recent.Events24h != 3 || recent.Routes24h != 1 || recent.Deliveries24h != 1 {
+		t.Fatalf("recent counts = %#v, err=%v", recent, err)
+	}
+}
+
+func TestObservationRepositoryCursorSurvivesConcurrentInsert(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "cursor.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	repository := NewObservationRepository(store)
+	at := time.Unix(1_700_000_000, 0).UTC()
+	insert := func(id string, observed time.Time) {
+		t.Helper()
+		if err := repository.InsertObservedEvent(ctx, ObservedEventRecord{ID: id, SchemaVersion: 1, Platform: "bilibili", SourceKind: "account", EventType: "dynamic", ObservedAt: observed, ContentFingerprint: strings.Repeat("b", 64), PublicSnapshotJSON: `{"text":"public"}`, CreatedAt: observed}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("evt-b", at)
+	insert("evt-a", at)
+	first, err := repository.ListObservedEvents(ctx, ObservationEventQuery{Limit: 1})
+	if err != nil || len(first.Events) != 1 || first.Events[0].ID != "evt-b" || first.NextCursor == nil {
+		t.Fatalf("first page = %#v, err=%v", first, err)
+	}
+	insert("evt-new", at.Add(time.Second))
+	second, err := repository.ListObservedEvents(ctx, ObservationEventQuery{Limit: 1, Cursor: first.NextCursor})
+	if err != nil || len(second.Events) != 1 || second.Events[0].ID != "evt-a" {
+		t.Fatalf("second page after insert = %#v, err=%v", second, err)
+	}
+}

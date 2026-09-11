@@ -31,11 +31,11 @@ Recorder 启动一个 worker，按 FIFO 顺序写入 event → route → deliver
 
 ## Retention
 
-默认 retention 是 90 天。`PruneOnce` 以 `observed_at` 和 ID 排序、每批最多 256 个 root event；SQLite 外键级联删除相关 route/delivery。它是显式 best-effort maintenance，不是 readiness 条件，也不重试失败操作。
+默认 retention 是 90 天。`PruneOnce` 以 `observed_at` 和 ID 排序、每批最多 256 个 root event；Recorder 启动后延迟执行一次，随后约每 24 小时执行一次。SQLite 外键级联删除相关 route/delivery。它是 best-effort maintenance，不是 readiness 条件；失败只记录稳定的 `retention:prune_error` 计数，不创建通用重试队列。
 
 ## SQLite migration
 
-当前 platform schema 为 v6。006 是独立 checksum 的 immutable migration；fresh database 按 001 → 006 顺序创建，v5 数据库启动时先执行 pre-migration backup，再应用 006。latest 数据库不会产生无意义 backup，backup failure 不会执行任何 v6 schema mutation。
+当前 platform schema 为 v6。006 是独立 checksum 的 immutable migration；fresh database 按 001 → 006 顺序创建，v5 数据库启动时先执行 pre-migration backup，再应用 006。latest 数据库不会产生无意义 backup，backup failure 不会执行任何 v6 schema mutation。本轮没有新增 007 migration；现有观察索引满足当前 bounded read queries，SQL 值全部参数化。
 
 ## Legacy seams
 
@@ -45,4 +45,4 @@ Recorder 启动一个 worker，按 FIFO 顺序写入 event → route → deliver
 - `lsp.ConcernNotify` 只负责把有效 route trace 带到真实通知发送边界；
 - `lsp.sendGroupMessage`/forward path 在 `adapter.SendResp.Status()` 或明确 forward error 返回后记录 delivery；Telegram 无明确结果时记录 unknown。
 
-这些 hook 不改返回值、过滤顺序、模板内容、消息分片、离线队列或 Messenger 调用参数。P2A 不提供 Observation API/页面；后续阶段才能消费这些事实。
+这些 hook 不改返回值、过滤顺序、模板内容、消息分片、离线队列或 Messenger 调用参数。读 API 和 Dashboard 只消费已持久化事实，不会反向驱动 Legacy。

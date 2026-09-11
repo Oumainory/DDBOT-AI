@@ -17,6 +17,7 @@ import (
 	"github.com/cnxysoft/DDBOT-WSa/internal/auth"
 	"github.com/cnxysoft/DDBOT-WSa/internal/buildinfo"
 	"github.com/cnxysoft/DDBOT-WSa/internal/csrf"
+	"github.com/cnxysoft/DDBOT-WSa/internal/observation"
 	"github.com/cnxysoft/DDBOT-WSa/internal/origin"
 	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
 	"github.com/cnxysoft/DDBOT-WSa/internal/session"
@@ -24,23 +25,29 @@ import (
 )
 
 type Config struct {
-	Auth          *auth.Service
-	Probe         *platformdb.Probe
-	Origin        origin.Policy
-	RequireOrigin bool
-	Cookie        session.CookiePolicy
-	LegacyOnline  *atomic.Bool
-	Build         buildinfo.Info
+	Auth                  *auth.Service
+	Probe                 *platformdb.Probe
+	Origin                origin.Policy
+	RequireOrigin         bool
+	Cookie                session.CookiePolicy
+	LegacyOnline          *atomic.Bool
+	Build                 buildinfo.Info
+	ObservationRepository *platformdb.ObservationRepository
+	ObservationRecorder   *observation.Recorder
+	Now                   func() time.Time
 }
 
 type Server struct {
-	auth        *auth.Service
-	probe       *platformdb.Probe
-	origin      origin.Policy
-	cookie      session.CookiePolicy
-	legacy      *atomic.Bool
-	build       buildinfo.Info
-	authHandler http.Handler
+	auth                  *auth.Service
+	probe                 *platformdb.Probe
+	origin                origin.Policy
+	cookie                session.CookiePolicy
+	legacy                *atomic.Bool
+	build                 buildinfo.Info
+	now                   func() time.Time
+	authHandler           http.Handler
+	observationRepository *platformdb.ObservationRepository
+	observationRecorder   *observation.Recorder
 }
 
 type Principal struct {
@@ -104,6 +111,9 @@ func NewServer(config Config) (*Server, error) {
 	if config.Build.ProductName == "" {
 		config.Build = buildinfo.Current()
 	}
+	if config.Now == nil {
+		config.Now = time.Now
+	}
 	if config.RequireOrigin {
 		config.Origin.AllowMissing = false
 	} else {
@@ -120,13 +130,16 @@ func NewServer(config Config) (*Server, error) {
 		return nil, err
 	}
 	return &Server{
-		auth:        config.Auth,
-		probe:       config.Probe,
-		origin:      config.Origin,
-		cookie:      config.Cookie,
-		legacy:      config.LegacyOnline,
-		build:       config.Build,
-		authHandler: authServer.Handler(),
+		auth:                  config.Auth,
+		probe:                 config.Probe,
+		origin:                config.Origin,
+		cookie:                config.Cookie,
+		legacy:                config.LegacyOnline,
+		build:                 config.Build,
+		now:                   config.Now,
+		observationRepository: config.ObservationRepository,
+		observationRecorder:   config.ObservationRecorder,
+		authHandler:           authServer.Handler(),
 	}, nil
 }
 
@@ -148,7 +161,30 @@ func (s *Server) Handler() http.Handler {
 			s.RequireAuth(http.HandlerFunc(s.handleOverview)).ServeHTTP(w, r)
 		case "/api/v2/about":
 			s.RequireAuth(http.HandlerFunc(s.handleAbout)).ServeHTTP(w, r)
+		case "/api/v2/observations/events":
+			s.RequireAuth(http.HandlerFunc(s.handleObservationEvents)).ServeHTTP(w, r)
+		case "/api/v2/observations/summary":
+			s.RequireAuth(http.HandlerFunc(s.handleObservationSummary)).ServeHTTP(w, r)
 		default:
+			parts := observationPathParts(r.URL.Path)
+			if len(parts) == 2 && parts[1] == "routes" {
+				s.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					s.handleObservationRoutes(w, r, parts[0])
+				})).ServeHTTP(w, r)
+				return
+			}
+			if len(parts) == 2 && parts[1] == "deliveries" {
+				s.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					s.handleObservationDeliveries(w, r, parts[0])
+				})).ServeHTTP(w, r)
+				return
+			}
+			if len(parts) == 1 {
+				s.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					s.handleObservationEventDetail(w, r, parts[0])
+				})).ServeHTTP(w, r)
+				return
+			}
 			s.writeError(w, http.StatusNotFound, "not_found", "resource not found")
 		}
 	})

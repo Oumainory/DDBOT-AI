@@ -38,6 +38,8 @@ type recorderFakeRepository struct {
 	enteredOnce  sync.Once
 	pruned       int
 	pruneErr     error
+	pruneCalled  chan struct{}
+	pruneOnce    sync.Once
 }
 
 func (f *recorderFakeRepository) InsertObservedEvent(ctx context.Context, record platformdb.ObservedEventRecord) error {
@@ -84,6 +86,9 @@ func (f *recorderFakeRepository) InsertDeliveryObservation(_ context.Context, re
 }
 
 func (f *recorderFakeRepository) PruneObservationsBefore(_ context.Context, _ time.Time, _ int) (int, error) {
+	if f.pruneCalled != nil {
+		f.pruneOnce.Do(func() { close(f.pruneCalled) })
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.pruned, f.pruneErr
@@ -283,6 +288,19 @@ func TestRecorderRetentionUsesRepositoryBoundary(t *testing.T) {
 	count, err := recorder.PruneOnce(context.Background(), time.Unix(1700000000, 0))
 	if err != nil || count != 3 {
 		t.Fatalf("prune = %d, %v; want 3,nil", count, err)
+	}
+}
+
+func TestRecorderRetentionJanitorRunsAsynchronously(t *testing.T) {
+	repository := &recorderFakeRepository{pruned: 2, pruneCalled: make(chan struct{})}
+	recorder := NewRecorder(repository, Config{PruneInitialDelay: time.Millisecond, PruneInterval: time.Hour})
+	select {
+	case <-repository.pruneCalled:
+	case <-time.After(time.Second):
+		t.Fatal("retention janitor did not run")
+	}
+	if err := recorder.Close(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 

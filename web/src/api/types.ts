@@ -42,3 +42,86 @@ export type About = {
   license: string
   license_name: string
 }
+
+export type ObservationPublicSummary = {
+  text?: string
+  url?: string
+  media_urls?: string[]
+  author_id?: string
+  author_name?: string
+}
+
+export type ObservationEvent = {
+  id: string
+  platform: string
+  source_kind: string
+  source_external_id: string
+  upstream_event_id: string
+  event_type: string
+  observed_at: string
+  source_event_at?: string
+  content_fingerprint: string
+  public_summary: ObservationPublicSummary
+  route_count?: number
+  delivery_count?: number
+  final_delivery_status?: string
+}
+
+export type ObservationPublicSnapshot = ObservationPublicSummary & {
+  platform?: string
+  source_kind?: string
+  source_external_id?: string
+  upstream_event_id?: string
+  event_type?: string
+  source_event_at?: number
+}
+
+export type ObservationRoute = {
+  id: string
+  event_id: string
+  route_ordinal: number
+  destination_kind: string
+  destination_external_id: string
+  outcome: 'pass' | 'filtered' | 'skipped' | 'unknown'
+  reason_code: string
+  observed_at: string
+}
+
+export type ObservationDelivery = {
+  id: string
+  event_id: string
+  route_observation_id: string
+  connector_kind: string
+  destination_external_id: string
+  status: 'sent' | 'queued' | 'not_sent' | 'unknown' | 'rejected'
+  result_code: string
+  observed_at: string
+}
+
+export type ObservationEventDetail = {
+  event: ObservationEvent & { public_snapshot: ObservationPublicSnapshot }
+  routes: ObservationRoute[]
+  deliveries: ObservationDelivery[]
+}
+
+export type ObservationPage = {
+  items: ObservationEvent[]
+  next_cursor?: string
+}
+
+export type ObservationSummary = {
+  window: { retention_days: number }
+  runtime: {
+    status: 'available' | 'degraded' | 'disabled' | 'unknown'
+    queue_capacity: number
+    queue_depth: number
+    events_accepted: number
+    routes_accepted: number
+    deliveries_accepted: number
+    queue_dropped: number
+    persistence_errors: number
+    worker_panics: number
+    prune_errors: number
+  }
+  recent: { events_24h: number; routes_24h: number; deliveries_24h: number }
+}

@@ -56,6 +56,9 @@ export function displayError(error: unknown): string {
     case 'csrf_rejected': return '安全校验失败，请刷新页面后重试'
     case 'auth_unavailable': return '认证服务暂不可用'
     case 'platform_unavailable': return '平台服务暂不可用'
+    case 'observation_unavailable': return 'Observation 当前不可用或尚未启用'
+    case 'observation_not_found': return 'Observation 已不存在（可能已被保留策略清理）'
+    case 'invalid_argument': return '筛选参数无效，请检查时间和分页条件'
     default: return error.message || '请求失败'
   }
 }

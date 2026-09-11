@@ -24,12 +24,14 @@ type Repository interface {
 }
 
 type Config struct {
-	QueueSize int
-	Random    io.Reader
-	Now       func() time.Time
-	Retention time.Duration
-	BatchSize int
-	Log       func(component, class string, count uint64)
+	QueueSize         int
+	Random            io.Reader
+	Now               func() time.Time
+	Retention         time.Duration
+	BatchSize         int
+	PruneInterval     time.Duration
+	PruneInitialDelay time.Duration
+	Log               func(component, class string, count uint64)
 }
 
 func (c Config) normalized() Config {
@@ -45,6 +47,12 @@ func (c Config) normalized() Config {
 	if c.BatchSize <= 0 {
 		c.BatchSize = 256
 	}
+	if c.PruneInterval <= 0 {
+		c.PruneInterval = 24 * time.Hour
+	}
+	if c.PruneInitialDelay <= 0 {
+		c.PruneInitialDelay = c.PruneInterval
+	}
 	if c.Log == nil {
 		c.Log = func(component, class string, count uint64) {
 			log.Printf("observation %s %s count=%d", component, class, count)
@@ -54,12 +62,15 @@ func (c Config) normalized() Config {
 }
 
 type Stats struct {
+	QueueCapacity      int
+	QueueDepth         int
 	EventsAccepted     uint64
 	RoutesAccepted     uint64
 	DeliveriesAccepted uint64
 	QueueDropped       uint64
 	PersistenceErrors  uint64
 	WorkerPanics       uint64
+	PruneErrors        uint64
 }
 
 type counters struct {
@@ -69,6 +80,7 @@ type counters struct {
 	queueDropped       atomic.Uint64
 	persistenceErrors  atomic.Uint64
 	workerPanics       atomic.Uint64
+	pruneErrors        atomic.Uint64
 }
 
 type queueItem struct {
@@ -82,15 +94,16 @@ type queueItem struct {
 // TryObserve* never waits for SQLite and never returns a storage error to the
 // Legacy caller; false means the observation was dropped.
 type Recorder struct {
-	repository Repository
-	queue      chan queueItem
-	stop       chan struct{}
-	done       chan struct{}
-	workerCtx  context.Context
-	cancel     context.CancelFunc
-	config     Config
-	ids        idGenerator
-	counters   counters
+	repository  Repository
+	queue       chan queueItem
+	stop        chan struct{}
+	done        chan struct{}
+	workerCtx   context.Context
+	cancel      context.CancelFunc
+	janitorDone chan struct{}
+	config      Config
+	ids         idGenerator
+	counters    counters
 
 	acceptMu  sync.RWMutex
 	accepting bool
@@ -101,17 +114,19 @@ func NewRecorder(repository Repository, config Config) *Recorder {
 	config = config.normalized()
 	ctx, cancel := context.WithCancel(context.Background())
 	recorder := &Recorder{
-		repository: repository,
-		queue:      make(chan queueItem, config.QueueSize),
-		stop:       make(chan struct{}),
-		done:       make(chan struct{}),
-		workerCtx:  ctx,
-		cancel:     cancel,
-		config:     config,
-		ids:        idGenerator{random: config.Random},
-		accepting:  repository != nil,
+		repository:  repository,
+		queue:       make(chan queueItem, config.QueueSize),
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
+		janitorDone: make(chan struct{}),
+		workerCtx:   ctx,
+		cancel:      cancel,
+		config:      config,
+		ids:         idGenerator{random: config.Random},
+		accepting:   repository != nil,
 	}
 	go recorder.worker()
+	go recorder.retentionLoop()
 	return recorder
 }
 
@@ -271,6 +286,38 @@ func (r *Recorder) worker() {
 	}
 }
 
+// retentionLoop runs delayed, bounded maintenance so startup never blocks on
+// a potentially large table. It is deliberately independent from readiness;
+// errors are counted and reported through the existing sanitized log seam.
+func (r *Recorder) retentionLoop() {
+	defer close(r.janitorDone)
+	timer := time.NewTimer(r.config.PruneInitialDelay)
+	defer timer.Stop()
+	select {
+	case <-r.stop:
+		return
+	case <-timer.C:
+	}
+	r.pruneAndRecord()
+	ticker := time.NewTicker(r.config.PruneInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.stop:
+			return
+		case <-ticker.C:
+			r.pruneAndRecord()
+		}
+	}
+}
+
+func (r *Recorder) pruneAndRecord() {
+	if _, err := r.PruneOnce(r.workerCtx, r.config.Now()); err != nil {
+		count := r.counters.pruneErrors.Add(1)
+		r.log("retention", "prune_error", count)
+	}
+}
+
 func (r *Recorder) drain() {
 	for {
 		select {
@@ -319,12 +366,15 @@ func (r *Recorder) Stats() Stats {
 		return Stats{}
 	}
 	return Stats{
+		QueueCapacity:      cap(r.queue),
+		QueueDepth:         len(r.queue),
 		EventsAccepted:     r.counters.eventsAccepted.Load(),
 		RoutesAccepted:     r.counters.routesAccepted.Load(),
 		DeliveriesAccepted: r.counters.deliveriesAccepted.Load(),
 		QueueDropped:       r.counters.queueDropped.Load(),
 		PersistenceErrors:  r.counters.persistenceErrors.Load(),
 		WorkerPanics:       r.counters.workerPanics.Load(),
+		PruneErrors:        r.counters.pruneErrors.Load(),
 	}
 }
 
@@ -359,6 +409,11 @@ func (r *Recorder) Close(ctx context.Context) error {
 	select {
 	case <-r.done:
 		r.cancel()
+		select {
+		case <-r.janitorDone:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 		return nil
 	case <-ctx.Done():
 		r.cancel()

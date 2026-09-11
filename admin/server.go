@@ -329,17 +329,28 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 	if store != nil {
 		repository = platformdb.NewAuthRepository(store)
 	}
+	var observationRepository *platformdb.ObservationRepository
+	var recorder *observation.Recorder
+	if store != nil {
+		observationRepository = platformdb.NewObservationRepository(store)
+		recorder = observation.NewRecorder(observationRepository, observation.Config{})
+	}
 	authService := auth.NewService(repository, auth.Config{})
 	apiServer, err := adminapi.NewServer(adminapi.Config{
-		Auth:          authService,
-		Probe:         &probe,
-		Origin:        platform.Origin,
-		RequireOrigin: platform.RequireOrigin,
-		Cookie:        platform.Cookie,
-		LegacyOnline:  online,
-		Build:         buildinfo.Current(),
+		Auth:                  authService,
+		Probe:                 &probe,
+		Origin:                platform.Origin,
+		RequireOrigin:         platform.RequireOrigin,
+		Cookie:                platform.Cookie,
+		LegacyOnline:          online,
+		Build:                 buildinfo.Current(),
+		ObservationRepository: observationRepository,
+		ObservationRecorder:   recorder,
 	})
 	if err != nil {
+		if recorder != nil {
+			_ = recorder.Close(context.Background())
+		}
 		if store != nil {
 			_ = store.Close()
 		}
@@ -355,10 +366,8 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 		// endpoint layer; detailed database state remains out of health JSON.
 		bootstrapErr = auth.ErrUnavailable
 	}
-	var recorder *observation.Recorder
 	var restoreObservation func()
-	if store != nil {
-		recorder = observation.NewRecorder(platformdb.NewObservationRepository(store), observation.Config{})
+	if recorder != nil {
 		restoreObservation = observation.Install(recorder)
 	}
 	return platformHTTP{
