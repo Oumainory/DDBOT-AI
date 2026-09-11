@@ -1,6 +1,6 @@
 # DDBOT-AI Phase 2 — Observation / Routing Foundation
 
-状态：**P2A IMPLEMENTING — Passive Observation Runtime**。
+状态：**P2A DONE / CLOSED — Passive Observation Runtime**；Phase 2 后续运行时尚未开始。
 
 Phase 1 已在 `phase1-baseline`（`6b1d591f388f50a31855a8f93a50c4a344e2b01e`）冻结。
 Phase 2 从该提交开始，只增加旁路可观测性，不改变 Legacy WSa 的订阅、过滤、模板、媒体或投递决定。
