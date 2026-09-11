@@ -43,6 +43,7 @@ onMounted(async () => {
         <div><dt>Build</dt><dd class="mono">{{ about.build_time }}</dd></div>
         <div><dt>许可证</dt><dd>{{ about.license_name }}</dd></div>
         <div><dt>源代码</dt><dd><a :href="about.source_repository" target="_blank" rel="noreferrer">{{ about.source_repository }}</a></dd></div>
+        <div v-if="about.commit_url"><dt>Commit 链接</dt><dd><a :href="about.commit_url" target="_blank" rel="noreferrer">{{ about.commit_url }}</a></dd></div>
       </dl>
     </el-card>
   </DashboardLayout>

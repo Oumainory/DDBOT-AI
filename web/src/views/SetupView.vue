@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { displayError } from '../api/client'
+import { ApiError, displayError } from '../api/client'
 import { useAuthStore } from '../stores/auth'
 
 const auth = useAuthStore()
@@ -12,6 +12,13 @@ const password = ref('')
 const confirmPassword = ref('')
 const error = ref('')
 const loading = ref(false)
+
+function clearSensitiveFields() {
+  setupToken.value = ''
+  username.value = ''
+  password.value = ''
+  confirmPassword.value = ''
+}
 
 async function submit() {
   error.value = ''
@@ -26,12 +33,15 @@ async function submit() {
   loading.value = true
   try {
     await auth.setup(setupToken.value, username.value, password.value)
-    setupToken.value = ''
-    username.value = ''
-    password.value = ''
-    confirmPassword.value = ''
+    clearSensitiveFields()
     await router.push({ name: 'login' })
   } catch (err) {
+    if (err instanceof ApiError && err.code === 'setup_complete') {
+      clearSensitiveFields()
+      auth.status = 'unauthenticated'
+      await router.replace({ name: 'login' })
+      return
+    }
     error.value = displayError(err)
   } finally {
     loading.value = false

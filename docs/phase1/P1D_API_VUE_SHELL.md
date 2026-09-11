@@ -91,6 +91,11 @@ Only `/`, `/setup`, `/login`, `/overview`, and `/about` fall back to
 are explicitly excluded from fallback. Security headers include
 `nosniff`, `no-referrer`, and `X-Frame-Options: DENY`.
 
+The browser uses only relative same-origin URLs, so the same shell works when
+the native listener is behind Caddy/Nginx or when a reverse proxy reaches the
+Docker service on its container network. P1D does not add CORS or a sub-path
+deployment mode; the default public base remains `/`.
+
 Dashboard availability is independent of `/readyz`: a Secret Store Recovery
 state may make readiness return 503 while the authenticated Dashboard remains
 available to show the degraded state. Platform initialization remains
