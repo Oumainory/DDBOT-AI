@@ -142,9 +142,24 @@ func ensureKeyParent(path string) error {
 	if parent == "." || parent == "" {
 		return nil
 	}
-	if err := os.MkdirAll(parent, masterKeyParentPerm); err != nil {
-		return err
+	info, err := os.Stat(parent)
+	switch {
+	case err == nil:
+		if !info.IsDir() {
+			return fmt.Errorf("%w: key parent is not a directory", ErrMasterKeyUnavailable)
+		}
+		// Existing directories are owned by the operator. In particular, do
+		// not chmod shared or bind-mounted parents such as /run/secrets.
+		return nil
+	case !errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("%w: inspect key parent", ErrMasterKeyUnavailable)
 	}
-	_ = os.Chmod(parent, masterKeyParentPerm)
+	// MkdirAll applies masterKeyParentPerm to directories it creates, subject
+	// to the host umask, while leaving any already-existing ancestor alone.
+	// Do not chmod the resulting path: a concurrent initializer may have
+	// created it, and its ownership/permissions then belong to the operator.
+	if err := os.MkdirAll(parent, masterKeyParentPerm); err != nil {
+		return fmt.Errorf("%w: create key parent", ErrMasterKeyUnavailable)
+	}
 	return nil
 }

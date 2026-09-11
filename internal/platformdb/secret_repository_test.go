@@ -122,3 +122,80 @@ func TestSecretRepositoryDoesNotPartiallyWriteInvalidEnvelope(t *testing.T) {
 		t.Fatalf("existing envelope after failed write = %#v, %v", current, err)
 	}
 }
+
+func TestSecretRepositoryValidatesCredentialSecretInvariant(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "platform.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	repo := NewSecretRepository(store)
+	if err := repo.CreateCredential(ctx, CredentialMetadataRecord{ID: "metadata-only", Type: "generic", Source: "manual"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ValidateSecretStoreConsistency(ctx); err != nil {
+		t.Fatalf("metadata-only consistency = %v", err)
+	}
+	if err := repo.PutCredentialSecret(ctx, "metadata-only", CredentialSecretRecord{
+		EnvelopeVersion: 1, SecretRevision: 1, Nonce: []byte{1}, Ciphertext: []byte{2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ValidateSecretStoreConsistency(ctx); err != nil {
+		t.Fatalf("configured credential consistency = %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, "UPDATE credentials SET configured = 0 WHERE id = ?", "metadata-only"); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(repo.ValidateSecretStoreConsistency(ctx), ErrSecretStoreInvariant) {
+		t.Fatalf("secret without configured metadata was accepted")
+	}
+	if _, err := store.db.ExecContext(ctx, "UPDATE credentials SET configured = 1 WHERE id = ?", "metadata-only"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, "DELETE FROM credential_secrets WHERE credential_id = ?", "metadata-only"); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(repo.ValidateSecretStoreConsistency(ctx), ErrSecretStoreInvariant) {
+		t.Fatalf("configured credential without secret was accepted")
+	}
+}
+
+func TestSecretRepositoryConsistencyCheckIsReadOnly(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "platform.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	repo := NewSecretRepository(store)
+	if err := repo.CreateCredential(ctx, CredentialMetadataRecord{ID: "read-only", Type: "generic", Source: "manual"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.PutCredentialSecret(ctx, "read-only", CredentialSecretRecord{
+		EnvelopeVersion: 1, SecretRevision: 1, Nonce: []byte{3}, Ciphertext: []byte{4},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var beforeCredentials, beforeSecrets int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM credentials").Scan(&beforeCredentials); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM credential_secrets").Scan(&beforeSecrets); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ValidateSecretStoreConsistency(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var afterCredentials, afterSecrets int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM credentials").Scan(&afterCredentials); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM credential_secrets").Scan(&afterSecrets); err != nil {
+		t.Fatal(err)
+	}
+	if beforeCredentials != afterCredentials || beforeSecrets != afterSecrets {
+		t.Fatalf("consistency check mutated row counts: before %d/%d, after %d/%d", beforeCredentials, beforeSecrets, afterCredentials, afterSecrets)
+	}
+}

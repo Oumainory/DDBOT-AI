@@ -17,6 +17,7 @@ var (
 	ErrCredentialNotFound         = errors.New("platformdb: credential not found")
 	ErrCredentialRevisionConflict = errors.New("platformdb: credential secret revision conflict")
 	ErrSecretNotConfigured        = errors.New("platformdb: credential secret is not configured")
+	ErrSecretStoreInvariant       = errors.New("platformdb: secret store invariant violation")
 )
 
 // SecretStoreStateRecord contains only the encrypted sentinel and its
@@ -101,6 +102,40 @@ SELECT CASE WHEN EXISTS (SELECT 1 FROM secret_store_state)
 		return false, fmt.Errorf("platformdb: inspect secret store data: %w", err)
 	}
 	return exists == 1, nil
+}
+
+// ValidateSecretStoreConsistency checks the durable relationship between
+// credential metadata and encrypted secret envelopes. It is deliberately a
+// read-only SQL-level check: startup must not decrypt every credential or
+// repair an ambiguous database state automatically.
+func (r *SecretRepository) ValidateSecretStoreConsistency(ctx context.Context) error {
+	if err := r.requireStore(); err != nil {
+		return err
+	}
+	ctx = normalizeContext(ctx)
+	var violated int
+	if err := r.store.db.QueryRowContext(ctx, `
+SELECT CASE WHEN
+    EXISTS (
+        SELECT 1
+        FROM credentials AS c
+        LEFT JOIN credential_secrets AS s ON s.credential_id = c.id
+        WHERE (c.configured = 1 AND s.credential_id IS NULL)
+           OR (c.configured = 0 AND s.credential_id IS NOT NULL)
+    )
+    OR EXISTS (
+        SELECT 1
+        FROM credential_secrets AS s
+        LEFT JOIN credentials AS c ON c.id = s.credential_id
+        WHERE c.id IS NULL
+    )
+THEN 1 ELSE 0 END`).Scan(&violated); err != nil {
+		return fmt.Errorf("platformdb: validate secret store consistency: %w", err)
+	}
+	if violated != 0 {
+		return ErrSecretStoreInvariant
+	}
+	return nil
 }
 
 func (r *SecretRepository) SecretStoreState(ctx context.Context) (SecretStoreStateRecord, error) {

@@ -113,7 +113,9 @@ func New(ctx context.Context, repo *platformdb.SecretRepository, cfg Config) *Se
 			service.state = StateRecovery
 			return service
 		}
-		service.state = StateReady
+		if !service.validateConsistency(ctx) {
+			return service
+		}
 		return service
 	}
 	if !errors.Is(stateErr, platformdb.ErrSecretStoreStateMissing) {
@@ -145,7 +147,9 @@ func New(ctx context.Context, repo *platformdb.SecretRepository, cfg Config) *Se
 		// rather than replacing it.
 		state, stateErr = repo.SecretStoreState(ctx)
 		if stateErr == nil && decryptSentinel(service.key, Envelope{Version: state.EnvelopeVersion, Nonce: state.SentinelNonce, Ciphertext: state.SentinelCipher}) == nil {
-			service.state = StateReady
+			if !service.validateConsistency(ctx) {
+				return service
+			}
 			return service
 		}
 		service.initErr = ErrSecretStoreRecovery
@@ -156,8 +160,26 @@ func New(ctx context.Context, repo *platformdb.SecretRepository, cfg Config) *Se
 		service.initErr = err
 		return service
 	}
-	service.state = StateReady
+	if !service.validateConsistency(ctx) {
+		return service
+	}
 	return service
+}
+
+// validateConsistency is the final startup gate after the sentinel has
+// authenticated the Master Key. An invariant mismatch is a recoverable
+// durable state; an inability to run the read-only check remains unavailable.
+func (s *Service) validateConsistency(ctx context.Context) bool {
+	err := s.repo.ValidateSecretStoreConsistency(ctx)
+	if err == nil {
+		s.state = StateReady
+		return true
+	}
+	s.initErr = err
+	if errors.Is(err, platformdb.ErrSecretStoreInvariant) {
+		s.state = StateRecovery
+	}
+	return false
 }
 
 func normalizeSecretContext(ctx context.Context) context.Context {

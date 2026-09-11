@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -152,6 +154,161 @@ func TestSecretStoreRestartUsesSameKeyAndSentinel(t *testing.T) {
 	resolved, err := restarted.service.ResolveSecret(context.Background(), "cred-restart")
 	if err != nil || string(resolved) != "restart-secret" {
 		t.Fatalf("restart ResolveSecret = %q, %v", resolved, err)
+	}
+}
+
+func TestConfiguredWithoutSecretEntersRecovery(t *testing.T) {
+	fixture := newSecretFixture(t)
+	ctx := context.Background()
+	if _, err := fixture.service.CreateCredential(ctx, CredentialInput{ID: "cred-configured-missing", Type: "generic", Label: "Missing", Source: "manual"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", fixture.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE credentials SET configured = 1 WHERE id = ?", "cred-configured-missing"); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recovered := reopenSecretFixture(t, fixture)
+	defer recovered.store.Close()
+	if recovered.service.State() != StateRecovery {
+		t.Fatalf("configured-without-secret state = %s, init error = %v", recovered.service.State(), recovered.service.InitError())
+	}
+	if !errors.Is(recovered.service.InitError(), platformdb.ErrSecretStoreInvariant) {
+		t.Fatalf("configured-without-secret init error = %v, want invariant", recovered.service.InitError())
+	}
+	if _, err := recovered.service.Metadata(ctx, "cred-configured-missing"); err != nil {
+		t.Fatalf("metadata in recovery = %v", err)
+	}
+	if _, err := recovered.service.ResolveSecret(ctx, "cred-configured-missing"); !errors.Is(err, ErrSecretStoreRecovery) {
+		t.Fatalf("ResolveSecret in recovery = %v", err)
+	}
+	if err := recovered.service.SetSecret(ctx, "cred-configured-missing", []byte("must-not-write")); !errors.Is(err, ErrSecretStoreRecovery) {
+		t.Fatalf("SetSecret in recovery = %v", err)
+	}
+}
+
+func TestSecretWithoutConfiguredFlagEntersRecovery(t *testing.T) {
+	fixture := newSecretFixture(t)
+	ctx := context.Background()
+	if _, err := fixture.service.CreateCredential(ctx, CredentialInput{ID: "cred-secret-unconfigured", Type: "generic", Label: "Unconfigured", Source: "manual"}); err != nil {
+		t.Fatal(err)
+	}
+	secret := []byte("test-secret-do-not-leak-123")
+	if err := fixture.service.SetSecret(ctx, "cred-secret-unconfigured", secret); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", fixture.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE credentials SET configured = 0 WHERE id = ?", "cred-secret-unconfigured"); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recovered := reopenSecretFixture(t, fixture)
+	defer recovered.store.Close()
+	if recovered.service.State() != StateRecovery {
+		t.Fatalf("secret-without-configured state = %s, init error = %v", recovered.service.State(), recovered.service.InitError())
+	}
+	if !errors.Is(recovered.service.InitError(), platformdb.ErrSecretStoreInvariant) {
+		t.Fatalf("secret-without-configured init error = %v, want invariant", recovered.service.InitError())
+	}
+	if _, err := recovered.service.Metadata(ctx, "cred-secret-unconfigured"); err != nil {
+		t.Fatalf("metadata in recovery = %v", err)
+	}
+	if _, err := recovered.service.ResolveSecret(ctx, "cred-secret-unconfigured"); !errors.Is(err, ErrSecretStoreRecovery) {
+		t.Fatalf("ResolveSecret in recovery = %v", err)
+	}
+	if err := recovered.service.SetSecret(ctx, "cred-secret-unconfigured", []byte("must-not-write")); !errors.Is(err, ErrSecretStoreRecovery) {
+		t.Fatalf("SetSecret in recovery = %v", err)
+	}
+}
+
+func TestMetadataOnlyCredentialRemainsReadyAfterRestart(t *testing.T) {
+	fixture := newSecretFixture(t)
+	ctx := context.Background()
+	if _, err := fixture.service.CreateCredential(ctx, CredentialInput{ID: "cred-metadata-only", Type: "generic", Label: "Metadata", Source: "manual"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted := reopenSecretFixture(t, fixture)
+	defer restarted.store.Close()
+	if restarted.service.State() != StateReady {
+		t.Fatalf("metadata-only restart state = %s, init error = %v", restarted.service.State(), restarted.service.InitError())
+	}
+	if _, err := restarted.service.Metadata(ctx, "cred-metadata-only"); err != nil {
+		t.Fatalf("metadata-only metadata = %v", err)
+	}
+	if _, err := restarted.service.ResolveSecret(ctx, "cred-metadata-only"); !errors.Is(err, ErrSecretNotConfigured) {
+		t.Fatalf("metadata-only ResolveSecret = %v", err)
+	}
+}
+
+func TestInvariantRecoveryHealthDoesNotLeakSecretMaterial(t *testing.T) {
+	fixture := newSecretFixture(t)
+	ctx := context.Background()
+	if _, err := fixture.service.CreateCredential(ctx, CredentialInput{ID: "cred-health-recovery", Type: "generic", Label: "Health", Source: "manual"}); err != nil {
+		t.Fatal(err)
+	}
+	secret := []byte("test-secret-do-not-leak-123")
+	if err := fixture.service.SetSecret(ctx, "cred-health-recovery", secret); err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := platformdb.NewSecretRepository(fixture.store).CredentialSecret(ctx, "cred-health-recovery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext := string(envelope.Ciphertext)
+	if err := fixture.store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", fixture.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE credentials SET configured = 0 WHERE id = ?", "cred-health-recovery"); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recovered := reopenSecretFixture(t, fixture)
+	defer recovered.store.Close()
+	probe := platformdb.NewProbeWithAuthAndSecret(recovered.store, nil, recovered.service)
+	for name, handler := range map[string]http.Handler{"health": probe.Healthz(), "ready": probe.Readyz()} {
+		t.Run(name, func(t *testing.T) {
+			record := httptest.NewRecorder()
+			handler.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/", nil))
+			body := record.Body.String()
+			if strings.Contains(body, string(secret)) || strings.Contains(body, ciphertext) || strings.Contains(body, fixture.keyPath) {
+				t.Fatalf("health response leaked sensitive material: %s", body)
+			}
+			if name == "health" {
+				if record.Code != http.StatusOK || !strings.Contains(body, `"status":"degraded"`) || !strings.Contains(body, `"code":"secret_store_recovery"`) {
+					t.Fatalf("health response = %d %s", record.Code, body)
+				}
+			} else if record.Code != http.StatusServiceUnavailable || !strings.Contains(body, `"status":"not_ready"`) || !strings.Contains(body, `"code":"secret_store_recovery"`) {
+				t.Fatalf("ready response = %d %s", record.Code, body)
+			}
+		})
 	}
 }
 

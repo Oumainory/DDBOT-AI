@@ -59,10 +59,10 @@ ddbot-ai-master-key-v1:<base64url-without-padding-of-exactly-32-bytes>
 
 On a fresh store, the service:
 
-1. creates the parent directory with restrictive permissions;
+1. creates a missing parent directory with a restrictive `0700` request;
 2. generates exactly 32 bytes with `crypto/rand`;
-3. writes with exclusive create, syncs, closes, and applies `0600` to the file
-   (`0700` to a newly-created parent where supported);
+3. writes with exclusive create, syncs, closes, and applies `0600` to the new
+   file;
 4. re-reads and strictly parses the persisted representation;
 5. only then creates and persists the encrypted sentinel.
 
@@ -71,6 +71,35 @@ sentinel or credential ciphertext and the key is missing, malformed, or cannot
 be loaded, initialization enters `recovery`; it never generates a replacement
 key. A wrong key or a tampered sentinel also enters `recovery`. A database with
 metadata but no encrypted data may initialize a new store normally.
+
+### Master Key parent ownership
+
+The Secret Store only owns directories that it creates for a missing key-file
+parent. The `0700` mode supplied during creation is best-effort and remains
+subject to the host umask. If the parent already exists, DDBOT-AI does not
+`chmod`, `chown`, or otherwise change it; this includes `/run/secrets`, bind
+mounts, and shared configuration directories. A parent path that exists but is
+not a directory is rejected as unavailable. Existing Master Key files are
+read-only inputs and are not chmodded or overwritten.
+
+### Durable Credential invariant
+
+For every credential, durable metadata and the encrypted envelope obey one
+invariant:
+
+```text
+credentials.configured = 1  iff  a credential_secrets row exists
+```
+
+`configured = 0` with no envelope is a valid metadata-only credential, and
+`configured = 1` with an envelope is a valid configured credential. Either
+mismatch (or a defensive orphan-envelope detection) is a durable invariant
+failure and puts the Secret Store in `recovery`; it never automatically
+updates metadata or deletes an envelope. The startup check is one cheap,
+read-only SQL existence query after the sentinel has authenticated the Master
+Key. It does not decrypt or load every credential, and it does not expose
+credential IDs, ciphertext, nonce, or other sensitive details through health
+or readiness.
 
 ## AES-256-GCM envelope
 

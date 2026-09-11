@@ -65,6 +65,105 @@ func TestFileKeyProviderCreatesReloadsAndDoesNotOverwrite(t *testing.T) {
 	}
 }
 
+func TestFileKeyProviderPreservesExistingParentPermissions(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "shared", "secrets")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(parent, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(parent, "master.key")
+	if _, err := (FileKeyProvider{Path: path, Random: bytes.NewReader(bytes.Repeat([]byte{0x23}, 32))}).LoadOrCreate(false); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	info, err := os.Stat(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("existing parent mode = %o, want 755", got)
+	}
+}
+
+func TestFileKeyProviderExistingSharedDirectoryIsNotModified(t *testing.T) {
+	root := t.TempDir()
+	shared := filepath.Join(root, "shared")
+	parent := filepath.Join(shared, "secrets")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(shared, 0o751); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(parent, 0o751); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(parent, "master.key")
+	if _, err := (FileKeyProvider{Path: path, Random: bytes.NewReader(bytes.Repeat([]byte{0x24}, 32))}).LoadOrCreate(false); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	for name, path := range map[string]string{"shared": shared, "secrets": parent} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o751 {
+			t.Fatalf("existing %s parent mode = %o, want 751", name, got)
+		}
+	}
+}
+
+func TestFileKeyProviderNewParentIsRestricted(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "new", "secrets")
+	path := filepath.Join(parent, "master.key")
+	if _, err := (FileKeyProvider{Path: path, Random: bytes.NewReader(bytes.Repeat([]byte{0x25}, 32))}).LoadOrCreate(false); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	info, err := os.Stat(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("new parent mode = %o, want owner-only", info.Mode().Perm())
+	}
+}
+
+func TestFileKeyProviderRejectsParentPathFile(t *testing.T) {
+	root := t.TempDir()
+	parentFile := filepath.Join(root, "not-a-directory")
+	original := []byte("operator-owned-file")
+	if err := os.WriteFile(parentFile, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(parentFile, "master.key")
+	if _, err := (FileKeyProvider{Path: path, Random: bytes.NewReader(bytes.Repeat([]byte{0x26}, 32))}).LoadOrCreate(false); !errors.Is(err, ErrMasterKeyUnavailable) {
+		t.Fatalf("parent file error = %v, want unavailable", err)
+	}
+	contents, err := os.ReadFile(parentFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(contents, original) {
+		t.Fatalf("parent file changed: %q", contents)
+	}
+}
+
 func TestFileKeyProviderMissingExistingSecretEntersMissingError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "master.key")
 	if _, err := (FileKeyProvider{Path: path, Random: bytes.NewReader(bytes.Repeat([]byte{0x11}, 32))}).LoadOrCreate(true); !errors.Is(err, ErrMasterKeyMissing) {
