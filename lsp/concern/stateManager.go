@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Sora233/MiraiGo-Template/utils"
+	"github.com/cnxysoft/DDBOT-WSa/internal/observation"
 	localdb "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/cfg"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
@@ -587,10 +588,17 @@ func (c *StateManager) filterNotify(inotify Notify) bool {
 	if inotify == nil {
 		return false
 	}
+	routeInput := observation.RouteInput{
+		DestinationKind:       "qq_group",
+		DestinationExternalID: fmt.Sprintf("%d", inotify.GetGroupCode()),
+	}
 	nLogger := inotify.Logger()
 	concern, err := GetConcernBySiteAndType(inotify.Site(), inotify.Type())
 	if err != nil {
 		nLogger.Errorf("filterNotify: GetConcernBySiteAndType error %v", err)
+		routeInput.Outcome = "unknown"
+		routeInput.ReasonCode = "unknown"
+		_, _ = observation.ObserveRouteForNotify(inotify, routeInput)
 		return true
 	}
 	concernConfig := concern.GetStateManager().GetGroupConcernConfig(inotify.GetGroupCode(), inotify.GetUid())
@@ -598,14 +606,23 @@ func (c *StateManager) filterNotify(inotify Notify) bool {
 	sendHookResult := concernConfig.ShouldSendHook(inotify)
 	if !sendHookResult.Pass {
 		nLogger.WithField("Reason", sendHookResult.Reason).Trace("notify filtered by hook ShouldSendHook")
+		routeInput.Outcome = "filtered"
+		routeInput.ReasonCode = "should_send_hook"
+		_, _ = observation.ObserveRouteForNotify(inotify, routeInput)
 		return false
 	}
 
 	newsFilterHook := concernConfig.FilterHook(inotify)
 	if !newsFilterHook.Pass {
 		nLogger.WithField("Reason", newsFilterHook.Reason).Trace("notify filtered by hook FilterHook")
+		routeInput.Outcome = "filtered"
+		routeInput.ReasonCode = "filter_hook"
+		_, _ = observation.ObserveRouteForNotify(inotify, routeInput)
 		return false
 	}
+	routeInput.Outcome = "pass"
+	routeInput.ReasonCode = "legacy_pass"
+	_, _ = observation.ObserveRouteForNotify(inotify, routeInput)
 	return true
 }
 
@@ -633,6 +650,7 @@ func (c *StateManager) IsExtendNotify(inotify Notify) bool {
 func (c *StateManager) DefaultDispatch() DispatchFunc {
 	return func(eventChan <-chan Event, notifyChan chan<- Notify) {
 		for event := range eventChan {
+			eventTrace, _ := observation.TryObserveEvent(observationInput(event))
 			log := event.Logger()
 			groups, _, _, err := c.ListConcernState(func(groupCode int64, id interface{}, p concern_type.Type) bool {
 				return event.GetUid() == id && p.ContainAll(event.Type())
@@ -643,11 +661,16 @@ func (c *StateManager) DefaultDispatch() DispatchFunc {
 			}
 			var notifies []Notify
 			var filteredGroups = make(map[int64]interface{})
+			routeOrdinal := 0
 			for _, groupCode := range groups {
 				for _, n := range c.NotifyGenerator(groupCode, event) {
+					observation.BindNotify(n, eventTrace, routeOrdinal)
+					routeOrdinal++
 					if c.filterNotify(n) {
 						notifies = append(notifies, n)
 						filteredGroups[n.GetGroupCode()] = true
+					} else {
+						observation.DetachNotify(n)
 					}
 				}
 			}

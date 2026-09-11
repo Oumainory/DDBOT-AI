@@ -1,4 +1,4 @@
--- DDBOT-AI current v5 schema reference (non-authoritative).
+-- DDBOT-AI current v6 schema reference (non-authoritative).
 -- The authoritative, immutable history is internal/platformdb/migrations/*.sql.
 -- The Core will execute these statements on the single SQLite owner
 -- connection with foreign_keys=ON, WAL, and a busy timeout.
@@ -164,3 +164,57 @@ CREATE TABLE IF NOT EXISTS credential_secrets (
 CREATE INDEX IF NOT EXISTS idx_credentials_type ON credentials (type);
 CREATE INDEX IF NOT EXISTS idx_credentials_source ON credentials (source);
 CREATE INDEX IF NOT EXISTS idx_credentials_updated ON credentials (updated_at);
+
+-- P2A passive observation reference. The exact authoritative statements and
+-- checksum live in internal/platformdb/migrations/006_observation.sql.
+CREATE TABLE IF NOT EXISTS observed_events (
+    id TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+    platform TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    source_external_id TEXT NOT NULL DEFAULT '',
+    upstream_event_id TEXT NOT NULL DEFAULT '',
+    event_type TEXT NOT NULL,
+    observed_at INTEGER NOT NULL,
+    source_event_at INTEGER,
+    content_fingerprint TEXT NOT NULL,
+    public_snapshot_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_observed_events_observed_at ON observed_events (observed_at);
+CREATE INDEX IF NOT EXISTS idx_observed_events_platform_source ON observed_events (platform, source_external_id);
+CREATE INDEX IF NOT EXISTS idx_observed_events_upstream_event ON observed_events (upstream_event_id);
+
+CREATE TABLE IF NOT EXISTS route_observations (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL,
+    route_ordinal INTEGER NOT NULL,
+    destination_kind TEXT NOT NULL,
+    destination_external_id TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('pass', 'filtered', 'skipped', 'unknown')),
+    reason_code TEXT NOT NULL,
+    observed_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (event_id) REFERENCES observed_events (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_route_observations_event ON route_observations (event_id, route_ordinal);
+
+CREATE TABLE IF NOT EXISTS delivery_observations (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL,
+    route_observation_id TEXT NOT NULL,
+    connector_kind TEXT NOT NULL,
+    destination_external_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('sent', 'queued', 'not_sent', 'unknown', 'rejected')),
+    result_code TEXT NOT NULL,
+    observed_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (event_id) REFERENCES observed_events (id) ON DELETE CASCADE,
+    FOREIGN KEY (route_observation_id) REFERENCES route_observations (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_delivery_observations_event ON delivery_observations (event_id);
+CREATE INDEX IF NOT EXISTS idx_delivery_observations_route ON delivery_observations (route_observation_id);
+CREATE INDEX IF NOT EXISTS idx_delivery_observations_observed_at ON delivery_observations (observed_at);

@@ -2,8 +2,10 @@ package bilibili
 
 import (
 	"bytes"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Sora233/MiraiGo-Template/config"
 	"github.com/cnxysoft/DDBOT-WSa/adapter"
@@ -43,6 +45,43 @@ func (n *NewsInfo) Logger() *logrus.Entry {
 		"CardSize": len(n.Cards),
 		"Type":     n.Type().String(),
 	})
+}
+
+// The following methods are the explicit public allowlist consumed by the
+// passive observation recorder. They intentionally expose no raw API card,
+// cookie, header, or credential fields.
+func (n *NewsInfo) ObservationPublicText() string {
+	if n == nil {
+		return ""
+	}
+	return n.Name
+}
+
+func (n *NewsInfo) ObservationPublicURL() string         { return "" }
+func (n *NewsInfo) ObservationPublicMediaURLs() []string { return nil }
+func (n *NewsInfo) ObservationPublicAuthorID() string {
+	if n == nil {
+		return ""
+	}
+	return strconv.FormatInt(n.Mid, 10)
+}
+func (n *NewsInfo) ObservationPublicAuthorName() string {
+	if n == nil {
+		return ""
+	}
+	return n.Name
+}
+func (n *NewsInfo) ObservationUpstreamEventID() string {
+	if n == nil || n.LastDynamicId == 0 {
+		return ""
+	}
+	return strconv.FormatInt(n.LastDynamicId, 10)
+}
+func (n *NewsInfo) ObservationSourceEventAt() time.Time {
+	if n == nil || n.Timestamp <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(n.Timestamp, 0).UTC()
 }
 
 type ConcernNewsNotify struct {
@@ -194,6 +233,44 @@ func (l *LiveInfo) Logger() *logrus.Entry {
 		"Status": l.Status.String(),
 		"Type":   l.Type().String(),
 	})
+}
+
+func (l *LiveInfo) ObservationPublicText() string {
+	if l == nil {
+		return ""
+	}
+	return l.LiveTitle
+}
+func (l *LiveInfo) ObservationPublicURL() string {
+	if l == nil {
+		return ""
+	}
+	return l.RoomUrl
+}
+func (l *LiveInfo) ObservationPublicMediaURLs() []string { return nil }
+func (l *LiveInfo) ObservationPublicAuthorID() string {
+	if l == nil {
+		return ""
+	}
+	return strconv.FormatInt(l.Mid, 10)
+}
+func (l *LiveInfo) ObservationPublicAuthorName() string {
+	if l == nil {
+		return ""
+	}
+	return l.Name
+}
+func (l *LiveInfo) ObservationUpstreamEventID() string {
+	if l == nil || l.LiveTime <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(l.LiveTime, 10)
+}
+func (l *LiveInfo) ObservationSourceEventAt() time.Time {
+	if l == nil || l.LiveTime <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(l.LiveTime, 0).UTC()
 }
 
 func (l *LiveInfo) SetAreaData(AreaId int32, AreaName string, ParentAreaId int32, ParentAreaName string) {

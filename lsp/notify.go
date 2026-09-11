@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/cnxysoft/DDBOT-WSa/adapter"
+	"github.com/cnxysoft/DDBOT-WSa/internal/observation"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
 	lsptelegram "github.com/cnxysoft/DDBOT-WSa/lsp/telegram"
@@ -34,18 +35,22 @@ func (l *Lsp) ConcernNotify() {
 				continue
 			}
 			var inotify = _inotify
+			routeTrace, hasRouteTrace := observation.RouteForNotify(inotify)
+			detachObservation := func() { observation.DetachNotify(inotify) }
 			target := mmsg.NewGroupTarget(inotify.GetGroupCode())
 			nLogger := inotify.Logger()
 
 			if l.LspStateManager.IsMuted(inotify.GetGroupCode(), utils.GetBot().GetUin()) &&
 				!l.PermissionStateManager.CheckGroupAdministrator(inotify.GetGroupCode(), utils.GetBot().GetUin()) {
 				nLogger.Info("BOT群内被禁言，跳过本次推送")
+				detachObservation()
 				continue
 			}
 
 			c, err := concern.GetConcernBySiteAndType(inotify.Site(), inotify.Type())
 			if err != nil {
 				nLogger.Errorf("GetConcernBySiteAndType error %v", err)
+				detachObservation()
 				continue
 			}
 			cfg := c.GetStateManager().GetGroupConcernConfig(inotify.GetGroupCode(), inotify.GetUid())
@@ -56,12 +61,22 @@ func (l *Lsp) ConcernNotify() {
 
 			if m == nil {
 				logger.Debug("the notification message is empty, skip this push.")
+				detachObservation()
 				continue
 			}
 
 			// 如果群id < 0, 则认为是TG聊群并忽略推送至QQ
 			if inotify.GetGroupCode() < 0 {
 				lsptelegram.SendToChat(inotify.GetGroupCode(), m)
+				if hasRouteTrace {
+					observation.ObserveDelivery(routeTrace, observation.DeliveryInput{
+						ConnectorKind:         "telegram",
+						DestinationExternalID: fmt.Sprintf("%d", inotify.GetGroupCode()),
+						Status:                "unknown",
+						ResultCode:            "legacy_result_unavailable",
+					})
+				}
+				detachObservation()
 				continue
 			}
 
@@ -97,6 +112,7 @@ func (l *Lsp) ConcernNotify() {
 				cancel()
 				nLogger.WithField("Content", msgstringer.AdapterMsgToString(m.Elements())).
 					Errorf("BOT负载过高，推送已积压超过一分钟，将舍弃本次推送。")
+				detachObservation()
 				continue
 			}
 			cancel()
@@ -104,6 +120,7 @@ func (l *Lsp) ConcernNotify() {
 			nLogger.Info("notify")
 			go func() {
 				defer l.notifyWg.Done()
+				defer detachObservation()
 				defer func() {
 					l.msgLimit.Release(1)
 					if e := recover(); e != nil {
@@ -118,7 +135,7 @@ func (l *Lsp) ConcernNotify() {
 					return
 				}
 
-				msgs := l.AGM(l.SendMsg(m, target))
+				msgs := l.AGM(l.SendMsgObserved(m, target, routeTrace))
 				if len(msgs) > 0 {
 					cfg.NotifyAfterCallback(inotify, msgs[0])
 				}
@@ -139,7 +156,7 @@ func (l *Lsp) ConcernNotify() {
 								return isAtAllElement(e)
 							})
 
-							secondRes := l.AGM(l.SendMsg(secondM, target))
+							secondRes := l.AGM(l.SendMsgObserved(secondM, target, routeTrace))
 							// secondRes一定是一条
 							if len(secondRes) != 1 {
 								panic(fmt.Sprintf("INTERNAL: len(secondRes) is %v", len(secondRes)))
@@ -159,7 +176,7 @@ func (l *Lsp) ConcernNotify() {
 						if len(ids) != 0 {
 							nLogger = nLogger.WithField("at_QQ", ids)
 							nLogger.Debug("notify atAll failed, try at someone")
-							l.SendMsg(newAtIdsMsg(mmsg.NewMSG(), ids), target)
+							l.SendMsgObserved(newAtIdsMsg(mmsg.NewMSG(), ids), target, routeTrace)
 						} else {
 							nLogger.Debug("notify atAll failed, at someone not config")
 						}

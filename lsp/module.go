@@ -1,10 +1,12 @@
 package lsp
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/cnxysoft/DDBOT-WSa/image_pool"
 	"github.com/cnxysoft/DDBOT-WSa/image_pool/local_pool"
 	"github.com/cnxysoft/DDBOT-WSa/image_pool/lolicon_pool"
+	"github.com/cnxysoft/DDBOT-WSa/internal/observation"
 	localdb "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/cfg"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
@@ -1114,9 +1117,13 @@ func (l *Lsp) GetImageFromPool(options ...image_pool.OptionFunc) ([]image_pool.I
 }
 
 func (l *Lsp) send(msg *adapter.SendingMessage, target mmsg.Target) interface{} {
+	return l.sendObserved(msg, target, observation.RouteTrace{})
+}
+
+func (l *Lsp) sendObserved(msg *adapter.SendingMessage, target mmsg.Target, routeTrace observation.RouteTrace) interface{} {
 	switch target.TargetType() {
 	case mmsg.TargetGroup:
-		return l.sendGroupMessage(target.TargetCode(), msg)
+		return l.sendGroupMessageObserved(target.TargetCode(), msg, routeTrace)
 	case mmsg.TargetPrivate:
 		return l.sendPrivateMessage(target.TargetCode(), msg)
 	}
@@ -1125,6 +1132,12 @@ func (l *Lsp) send(msg *adapter.SendingMessage, target mmsg.Target) interface{} 
 
 // SendMsg 总是返回至少一个
 func (l *Lsp) SendMsg(m *mmsg.MSG, target mmsg.Target) (res []interface{}) {
+	return l.SendMsgObserved(m, target, observation.RouteTrace{})
+}
+
+// SendMsgObserved is the existing SendMsg path with an optional passive
+// observation trace. A zero trace follows exactly the historical behavior.
+func (l *Lsp) SendMsgObserved(m *mmsg.MSG, target mmsg.Target, routeTrace observation.RouteTrace) (res []interface{}) {
 	failure := func() interface{} {
 		switch target.TargetType() {
 		case mmsg.TargetPrivate:
@@ -1168,7 +1181,7 @@ func (l *Lsp) SendMsg(m *mmsg.MSG, target mmsg.Target) (res []interface{}) {
 				res = append(res, &adapter.PrivateMessage{ID: int64(msgID), UserID: target.TargetCode()})
 			}
 		case mmsg.TargetGroup:
-			msgID, _, err := l.sendGroupForwardMessage(target.TargetCode(), forwardNodes, forwardOptions)
+			msgID, _, err := l.sendGroupForwardMessageObserved(target.TargetCode(), forwardNodes, forwardOptions, routeTrace)
 			if err != nil {
 				res = append(res, &adapter.GroupMessage{ID: -1})
 			} else {
@@ -1184,7 +1197,7 @@ func (l *Lsp) SendMsg(m *mmsg.MSG, target mmsg.Target) (res []interface{}) {
 		return
 	}
 	for idx, msg := range msgs {
-		r := l.send(msg, target)
+		r := l.sendObserved(msg, target, routeTrace)
 		res = append(res, r)
 		switch v := r.(type) {
 		case *adapter.GroupMessage:
@@ -1252,6 +1265,10 @@ func (l *Lsp) sendPrivateMessage(uin int64, msg *adapter.SendingMessage) (res *a
 
 // sendGroupMessage 发送一条消息，返回值总是非nil，ID为-1表示发送失败
 func (l *Lsp) sendGroupMessage(groupCode int64, msg *adapter.SendingMessage, recovered ...bool) (res *adapter.GroupMessage) {
+	return l.sendGroupMessageObserved(groupCode, msg, observation.RouteTrace{}, recovered...)
+}
+
+func (l *Lsp) sendGroupMessageObserved(groupCode int64, msg *adapter.SendingMessage, routeTrace observation.RouteTrace, recovered ...bool) (res *adapter.GroupMessage) {
 	defer func() {
 		if e := recover(); e != nil {
 			content := ""
@@ -1262,7 +1279,7 @@ func (l *Lsp) sendGroupMessage(groupCode int64, msg *adapter.SendingMessage, rec
 				logger.WithField("content", content).
 					WithField("stack", string(debug.Stack())).
 					Errorf("sendGroupMessage panic recovered")
-				res = l.sendGroupMessage(groupCode, msg, true)
+				res = l.sendGroupMessageObserved(groupCode, msg, routeTrace, true)
 			} else {
 				logger.WithField("content", content).
 					WithField("stack", string(debug.Stack())).
@@ -1299,6 +1316,19 @@ func (l *Lsp) sendGroupMessage(groupCode int64, msg *adapter.SendingMessage, rec
 	}
 	var newstring = msgstringer.AdapterMsgToString(msg.Elements)
 	ret := bot.Instance.SendGroupMessage(groupCode, msg, newstring)
+	if routeTrace.Valid() {
+		connector := "legacy"
+		if bot.Instance.Messenger != nil && bot.Instance.Messenger.Adapter != nil {
+			connector = normalizeObservationConnector(bot.Instance.Messenger.Adapter.GetAdapterName())
+		}
+		status, resultCode := observationSendStatus(ret)
+		observation.ObserveDelivery(routeTrace, observation.DeliveryInput{
+			ConnectorKind:         connector,
+			DestinationExternalID: fmt.Sprintf("%d", groupCode),
+			Status:                status,
+			ResultCode:            resultCode,
+		})
+	}
 	res = ret.RetMSG
 	err := ret.Error
 	if err != nil {
@@ -1317,12 +1347,72 @@ func (l *Lsp) sendGroupMessage(groupCode int64, msg *adapter.SendingMessage, rec
 	return res
 }
 
+func observationSendStatus(resp adapter.SendResp) (string, string) {
+	switch resp.Status() {
+	case adapter.GroupSendSent:
+		return "sent", "sent"
+	case adapter.GroupSendQueued:
+		return "queued", "queued"
+	case adapter.GroupSendNotSent:
+		return "not_sent", "legacy_not_sent"
+	case adapter.GroupSendRejected:
+		return "rejected", "rejected"
+	default:
+		return "unknown", "transport_unknown"
+	}
+}
+
+func normalizeObservationConnector(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case strings.Contains(name, "satori"):
+		return "satori"
+	case strings.Contains(name, "onebot"), strings.Contains(name, "llone"), strings.Contains(name, "napcat"):
+		return "onebot"
+	case name != "":
+		return name
+	default:
+		return "legacy"
+	}
+}
+
 // sendGroupForwardMessage 发送群合并转发消息
 func (l *Lsp) sendGroupForwardMessage(groupCode int64, nodes []map[string]interface{}, options *adapter.ForwardOptions) (int32, string, error) {
+	return l.sendGroupForwardMessageObserved(groupCode, nodes, options, observation.RouteTrace{})
+}
+
+func (l *Lsp) sendGroupForwardMessageObserved(groupCode int64, nodes []map[string]interface{}, options *adapter.ForwardOptions, routeTrace observation.RouteTrace) (int32, string, error) {
 	if bot.Instance == nil {
 		return -1, "", fmt.Errorf("bot not initialized")
 	}
-	return bot.Instance.SendGroupForwardMessage(groupCode, nodes, options)
+	messageID, response, err := bot.Instance.SendGroupForwardMessage(groupCode, nodes, options)
+	if routeTrace.Valid() {
+		status, resultCode := observationForwardStatus(err)
+		connector := "legacy"
+		if bot.Instance.Messenger != nil && bot.Instance.Messenger.Adapter != nil {
+			connector = normalizeObservationConnector(bot.Instance.Messenger.Adapter.GetAdapterName())
+		}
+		observation.ObserveDelivery(routeTrace, observation.DeliveryInput{
+			ConnectorKind:         connector,
+			DestinationExternalID: fmt.Sprintf("%d", groupCode),
+			Status:                status,
+			ResultCode:            resultCode,
+		})
+	}
+	return messageID, response, err
+}
+
+func observationForwardStatus(err error) (string, string) {
+	if err == nil {
+		return "sent", "sent"
+	}
+	if errors.Is(err, adapter.ErrRequestNotSent) {
+		return "not_sent", "legacy_not_sent"
+	}
+	if errors.Is(err, adapter.ErrRequestRejected) {
+		return "rejected", "rejected"
+	}
+	return "unknown", "transport_unknown"
 }
 
 // sendPrivateForwardMessage 发送私聊合并转发消息

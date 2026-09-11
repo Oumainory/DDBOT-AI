@@ -17,6 +17,7 @@ import (
 	"github.com/cnxysoft/DDBOT-WSa/internal/adminapi"
 	"github.com/cnxysoft/DDBOT-WSa/internal/auth"
 	"github.com/cnxysoft/DDBOT-WSa/internal/buildinfo"
+	"github.com/cnxysoft/DDBOT-WSa/internal/observation"
 	"github.com/cnxysoft/DDBOT-WSa/internal/origin"
 	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
 	"github.com/cnxysoft/DDBOT-WSa/internal/runtimeconfig"
@@ -148,10 +149,12 @@ type Server struct {
 	addr  string
 	token string
 
-	startedAt     time.Time
-	online        *atomic.Bool
-	httpServer    *http.Server
-	platformStore *platformdb.Store
+	startedAt           time.Time
+	online              *atomic.Bool
+	httpServer          *http.Server
+	platformStore       *platformdb.Store
+	observationRecorder *observation.Recorder
+	restoreObservation  func()
 }
 
 // PlatformConfig controls the opt-in Phase 1 platform foundation mounted next to
@@ -236,6 +239,8 @@ func start(online *atomic.Bool, alive *atomic.Bool, platform *PlatformConfig) (*
 			return nil, err
 		}
 		s.platformStore = store
+		s.observationRecorder = platformHTTP.observationRecorder
+		s.restoreObservation = platformHTTP.restoreObservation
 		mux.Handle("/api/v2/", platformHTTP.handler)
 		mux.Handle("/healthz", platformHTTP.probe.Healthz())
 		mux.Handle("/readyz", platformHTTP.probe.Readyz())
@@ -296,11 +301,13 @@ func start(online *atomic.Bool, alive *atomic.Bool, platform *PlatformConfig) (*
 }
 
 type platformHTTP struct {
-	handler      http.Handler
-	probe        platformdb.Probe
-	secretStore  *secretstore.Service
-	bootstrap    auth.BootstrapResult
-	bootstrapErr error
+	handler             http.Handler
+	probe               platformdb.Probe
+	secretStore         *secretstore.Service
+	bootstrap           auth.BootstrapResult
+	bootstrapErr        error
+	observationRecorder *observation.Recorder
+	restoreObservation  func()
 }
 
 func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP, *platformdb.Store, error) {
@@ -348,12 +355,20 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 		// endpoint layer; detailed database state remains out of health JSON.
 		bootstrapErr = auth.ErrUnavailable
 	}
+	var recorder *observation.Recorder
+	var restoreObservation func()
+	if store != nil {
+		recorder = observation.NewRecorder(platformdb.NewObservationRepository(store), observation.Config{})
+		restoreObservation = observation.Install(recorder)
+	}
 	return platformHTTP{
-		handler:      apiServer.Handler(),
-		probe:        probe,
-		secretStore:  secretService,
-		bootstrap:    result,
-		bootstrapErr: bootstrapErr,
+		handler:             apiServer.Handler(),
+		probe:               probe,
+		secretStore:         secretService,
+		bootstrap:           result,
+		bootstrapErr:        bootstrapErr,
+		observationRecorder: recorder,
+		restoreObservation:  restoreObservation,
 	}, store, nil
 }
 
@@ -402,6 +417,17 @@ func (s *Server) Close() error {
 		if err := s.httpServer.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			firstErr = err
 		}
+	}
+	if s.observationRecorder != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		if err := s.observationRecorder.Close(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		cancel()
+	}
+	if s.restoreObservation != nil {
+		s.restoreObservation()
+		s.restoreObservation = nil
 	}
 	if s.platformStore != nil {
 		if err := s.platformStore.Close(); err != nil && firstErr == nil {

@@ -44,6 +44,57 @@ func (e *NewsInfo) Logger() *logrus.Entry {
 	})
 }
 
+// Explicit public observation allowlist; raw API responses and credentials
+// never cross this boundary.
+func (e *NewsInfo) ObservationPublicText() string {
+	if e == nil || e.Tweet == nil {
+		return ""
+	}
+	return e.Tweet.Content
+}
+func (e *NewsInfo) ObservationPublicURL() string {
+	if e == nil || e.Tweet == nil {
+		return ""
+	}
+	return e.Tweet.Url
+}
+func (e *NewsInfo) ObservationPublicMediaURLs() []string {
+	if e == nil || e.Tweet == nil {
+		return nil
+	}
+	urls := make([]string, 0, len(e.Tweet.Media))
+	for _, media := range e.Tweet.Media {
+		if media != nil {
+			urls = append(urls, media.Url)
+		}
+	}
+	return urls
+}
+func (e *NewsInfo) ObservationPublicAuthorID() string {
+	if e == nil || e.UserInfo == nil {
+		return ""
+	}
+	return e.UserInfo.Id
+}
+func (e *NewsInfo) ObservationPublicAuthorName() string {
+	if e == nil || e.UserInfo == nil {
+		return ""
+	}
+	return e.UserInfo.Name
+}
+func (e *NewsInfo) ObservationUpstreamEventID() string {
+	if e == nil || e.Tweet == nil {
+		return ""
+	}
+	return e.Tweet.ID
+}
+func (e *NewsInfo) ObservationSourceEventAt() time.Time {
+	if e == nil || e.Tweet == nil {
+		return time.Time{}
+	}
+	return e.Tweet.CreatedAt.UTC()
+}
+
 func (e *NewsInfo) GetMSG(n *ConcernNewsNotify) (m *mmsg.MSG) {
 	defer func() {
 		if err := recover(); err != nil {
