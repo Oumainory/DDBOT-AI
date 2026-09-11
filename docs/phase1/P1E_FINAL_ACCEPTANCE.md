@@ -1,7 +1,6 @@
 # DDBOT-AI Phase 1 — P1E Final Acceptance Matrix
 
-状态：**P1E ACCEPTANCE IN PROGRESS**（所有本地与 CI 门禁完成后更新为
-**P1E DONE / CLOSED**）。
+状态：**P1E DONE / CLOSED；PHASE 1 READY FOR FREEZE**。
 
 本文件是 Phase 1 的最终验收记录，不是新的运行时设计。验收只覆盖
 Platform Foundation：P1A SQLite、P1B Admin Auth、P1C Secret Store 和 P1D
@@ -30,26 +29,26 @@ P1E 不修改 `main`、`phase0-baseline`、`codex/phase0-foundation` 或已发�
 
 | Gate | Status | Evidence |
 | --- | --- | --- |
-| Legacy AI-OFF compatibility | `PASS` after final run | `compat/cmd verify`、Phase 0 manifest、baseline/current 21 probes |
+| Legacy AI-OFF compatibility | `PASS` | CI run [#38](https://github.com/Oumainory/DDBOT-AI/actions/runs/34570232140)：baseline/current 21 probes，semantic diff 0 |
 | Fresh platform database | `PASS` | platformdb fresh migration tests、`internal/p1e/TestPhase1FreshRestartAndRecoveryFlow` |
 | Existing database restart | `PASS` | ordered migration idempotency、Secret Store sentinel/key restart、P1E integration test |
 | v1–v4 upgrade and backup-before-migrate | `PASS` | platformdb v1→v5、v2→v5、v3→v5、v4→v5 fixtures |
 | Backup failure safety | `PASS` | backup failure/collision tests; live schema/history remain unchanged |
 | Setup Token / unique admin | `PASS` | adminauth/auth setup, replay, expiry, TOCTOU, concurrency tests |
-| Local password recovery | `PASS` after final run | `ddbot-ai admin reset-password`; adminreset/auth/repository reset tests |
+| Local password recovery | `PASS` | `ddbot-ai admin reset-password`; adminreset/auth/repository reset tests |
 | Session/cookie/CSRF/Origin | `PASS` | adminauth/adminapi/session/csrf/origin tests; Login missing Origin remains allowed by default |
 | Master Key ownership | `PASS` | Secret Store parent-permission, file collision and exclusive-create tests |
 | Secret Store encryption/restart | `PASS` | AES-256-GCM/AAD/revision and restart tests |
 | Secret Store Recovery | `PASS` | missing/wrong/malformed key, corrupted sentinel, mismatch, health/readiness and P1E tests |
 | Non-sensitive health/readiness | `PASS` | health tests and secret material leak tests |
 | Dashboard API shell | `PASS` | adminapi overview/about/auth flow and JSON 404 tests |
-| Vue shell deterministic artifact | `PASS` after final run | `npm ci`, typecheck, Vitest, build, committed `internal/webui/dist` diff |
-| Browser Setup→Login→Overview→Logout | `PASS` after final run | deterministic browser smoke evidence; server flow also covered by adminapi tests |
+| Vue shell deterministic artifact | `PASS` | `npm ci`, typecheck, Vitest, build, committed `internal/webui/dist` diff |
+| Browser Setup→Login→Overview→Logout | `PASS` | Dashboard shell browser smoke; server flow also covered by `internal/p1e` and adminapi tests |
 | Portability / deployment binding | `PASS` | runtime listen tests and `docs/deployment/DOCKER_LISTENING.md`; no personal coupling |
 | AGPL/source metadata | `PASS` | root `LICENSE`, `/api/v2/about`, buildinfo tests |
-| Dependency/license audit | `PASS` after final run | locked Go modules and `web/package-lock.json` inventory |
-| Three pure-Go release targets | `PASS` after final run | main and platform package archives for all three targets |
-| CI release gate | `PASS` after final run | GitHub Actions run URL recorded below |
+| Dependency/license audit | `PASS` | locked Go modules and `web/package-lock.json` inventory |
+| Three pure-Go release targets | `PASS` | main and platform package archives for all three targets; CI run #38 matrix green |
+| CI release gate | `PASS` | GitHub Actions run [#38](https://github.com/Oumainory/DDBOT-AI/actions/runs/34570232140) succeeded |
 
 Known public upstream community-group IDs printed by the Legacy banner are
 product compatibility text, not developer environment data; they are retained
@@ -113,27 +112,29 @@ Shadow, ENFORCE, model cost accounting and durable general delivery retry.
 
 ## Final command record
 
-The following block is filled only with commands that actually ran on the
-release candidate:
+The following block records commands that ran on the release candidate. The
+local Windows Compatibility launcher was blocked by the host's `go run`
+temporary-executable policy (`Access is denied`); the same command ran on the
+Linux CI runner and is the authoritative 21/21 semantic gate.
 
 ```text
-CGO_ENABLED=0 go test -mod=readonly ./...                         [pending]
-CGO_ENABLED=0 go vet -mod=readonly ./...                          [pending]
-cd adapter && CGO_ENABLED=0 go test -mod=readonly ./...           [pending]
-cd adapter && CGO_ENABLED=0 go vet -mod=readonly ./...            [pending]
-go run ./compat/cmd verify --baseline a6364e7...                  [pending]
-linux/amd64 pure-Go build                                        [pending]
-linux/arm64 pure-Go build                                        [pending]
-windows/amd64 pure-Go build                                      [pending]
-frontend typecheck/test/build and embedded diff                   [pending]
-GitHub Actions run                                                [pending]
+CGO_ENABLED=0 go test -mod=readonly ./...                         PASS
+CGO_ENABLED=0 go vet -mod=readonly ./...                          PASS
+cd adapter && CGO_ENABLED=0 go test -mod=readonly ./...           PASS
+cd adapter && CGO_ENABLED=0 go vet -mod=readonly ./...            PASS
+go run ./compat/cmd verify --baseline a6364e7...                  CI PASS: 21/21 + diff 0
+linux/amd64 pure-Go build                                        PASS
+linux/arm64 pure-Go build                                        PASS
+windows/amd64 pure-Go build                                      PASS
+frontend typecheck/test/build and embedded diff                   PASS
+GitHub Actions run #38                                           PASS
 ```
 
 ## Completion declaration
 
-This declaration is intentionally not advanced until every row above is
-`PASS`/`NOT_APPLICABLE`/`DEFERRED_BY_FROZEN_SCOPE` and the Compatibility,
-frontend, adapter, three-target and CI gates have concrete evidence:
+All rows above are `PASS`/`NOT_APPLICABLE`/`DEFERRED_BY_FROZEN_SCOPE`; the
+Compatibility, frontend, adapter, three-target and CI gates have concrete
+evidence:
 
 ```text
 P1E DONE / CLOSED
