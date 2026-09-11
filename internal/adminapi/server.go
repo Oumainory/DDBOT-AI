@@ -20,8 +20,10 @@ import (
 	"github.com/cnxysoft/DDBOT-WSa/internal/csrf"
 	"github.com/cnxysoft/DDBOT-WSa/internal/discovery"
 	"github.com/cnxysoft/DDBOT-WSa/internal/idempotency"
+	"github.com/cnxysoft/DDBOT-WSa/internal/migration"
 	"github.com/cnxysoft/DDBOT-WSa/internal/observation"
 	"github.com/cnxysoft/DDBOT-WSa/internal/origin"
+	"github.com/cnxysoft/DDBOT-WSa/internal/pairing"
 	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
 	"github.com/cnxysoft/DDBOT-WSa/internal/session"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/subscription"
@@ -41,6 +43,10 @@ type Config struct {
 	DomainRepository      *platformdb.DomainRepository
 	LegacySubscriptions   *subscription.Service
 	Idempotency           *idempotency.MemoryStore
+	MigrationRepository   *platformdb.MigrationRepository
+	MigrationCoordinator  *migration.Coordinator
+	PairingService        *pairing.Service
+	PairingVerifier       pairing.Verifier
 	BilibiliResolver      discovery.BilibiliResolver
 	TwitterResolver       discovery.TwitterResolver
 	Now                   func() time.Time
@@ -60,6 +66,10 @@ type Server struct {
 	domainRepository      *platformdb.DomainRepository
 	legacySubscriptions   *subscription.Service
 	idempotency           *idempotency.MemoryStore
+	migrationRepository   *platformdb.MigrationRepository
+	migrationCoordinator  *migration.Coordinator
+	pairingService        *pairing.Service
+	pairingVerifier       pairing.Verifier
 	bilibiliResolver      discovery.BilibiliResolver
 	twitterResolver       discovery.TwitterResolver
 	testMu                sync.Mutex
@@ -142,6 +152,27 @@ func NewServer(config Config) (*Server, error) {
 	if config.TwitterResolver == nil {
 		config.TwitterResolver = discovery.StaticTwitterResolver{}
 	}
+	if config.MigrationRepository == nil && config.DomainRepository != nil {
+		config.MigrationRepository = config.DomainRepository.MigrationRepository()
+	}
+	if config.MigrationCoordinator == nil && config.MigrationRepository != nil && config.DomainRepository != nil {
+		config.MigrationCoordinator = migration.NewCoordinator(migration.Config{Repository: config.MigrationRepository, Domain: config.DomainRepository, Now: config.Now})
+	}
+	if config.PairingService == nil && config.MigrationRepository != nil && config.DomainRepository != nil {
+		config.PairingService = pairing.New(pairing.Config{Repository: config.MigrationRepository, Domain: config.DomainRepository, Now: config.Now})
+	}
+	if config.MigrationRepository != nil && config.LegacySubscriptions != nil {
+		config.LegacySubscriptions.SetMutationGate(func(ctx context.Context, groupCode int64) error {
+			frozen, err := config.MigrationRepository.FrozenLegacyGroup(ctx, groupCode)
+			if err != nil {
+				return nil
+			} // platform degradation remains fail-open
+			if frozen {
+				return platformdb.ErrMigrationInProgress
+			}
+			return nil
+		})
+	}
 	if config.RequireOrigin {
 		config.Origin.AllowMissing = false
 	} else {
@@ -170,6 +201,10 @@ func NewServer(config Config) (*Server, error) {
 		domainRepository:      config.DomainRepository,
 		legacySubscriptions:   config.LegacySubscriptions,
 		idempotency:           config.Idempotency,
+		migrationRepository:   config.MigrationRepository,
+		migrationCoordinator:  config.MigrationCoordinator,
+		pairingService:        config.PairingService,
+		pairingVerifier:       config.PairingVerifier,
 		bilibiliResolver:      config.BilibiliResolver,
 		twitterResolver:       config.TwitterResolver,
 		testLast:              make(map[string]time.Time),
@@ -205,6 +240,8 @@ func (s *Server) Handler() http.Handler {
 			s.handleTargets(w, r)
 		case "/api/v2/connectors":
 			s.handleConnectors(w, r)
+		case "/api/v2/connector-migrations":
+			s.handleMigrations(w, r)
 		case "/api/v2/subscriptions":
 			s.handleSubscriptions(w, r)
 		case "/api/v2/subscriptions/rebuild-projection":
@@ -216,6 +253,12 @@ func (s *Server) Handler() http.Handler {
 		case "/api/v2/discovery/twitter/resolve":
 			s.handleTwitterResolve(w, r)
 		default:
+			if s.handleMigrationSubresource(w, r) {
+				return
+			}
+			if s.handlePairingSubresource(w, r) {
+				return
+			}
 			if s.handleDomainSubresource(w, r) {
 				return
 			}

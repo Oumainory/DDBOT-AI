@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -31,6 +32,7 @@ func (l *Lsp) StartTelegramCommands() {
 		tgL := &Lsp{
 			PermissionStateManager: permission.NewTgStateManager(),
 			LspStateManager:        l.LspStateManager,
+			SubscriptionService:    l.SubscriptionService,
 		}
 		// Parse command token and args
 		cmd, args := parseTGLine(text)
@@ -44,11 +46,30 @@ func (l *Lsp) StartTelegramCommands() {
 		defaultGroup := tgDefaultGroup(chatID)
 
 		switch strings.ToLower(cmd) {
+		case "bind":
+			// `/bind CODE` is intentionally handled before the Legacy QQ-style
+			// command set. The code is passed straight to the platform callback;
+			// it is never logged, echoed, persisted by this package, or included
+			// in an error response.
+			if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
+				lsptelegram.SendToChat(chatID, mmsg.NewText("用法：/bind <配对码>"))
+				return
+			}
+			if l.TelegramBindHandler == nil {
+				lsptelegram.SendToChat(chatID, mmsg.NewText("绑定失败 - Telegram 配对当前不可用"))
+				return
+			}
+			if err := l.TelegramBindHandler(context.Background(), chatID, fromID, strings.TrimSpace(args[0])); err != nil {
+				lsptelegram.SendToChat(chatID, mmsg.NewText("绑定失败 - 配对码无效或目标不可验证"))
+				return
+			}
+			lsptelegram.SendToChat(chatID, mmsg.NewText("绑定成功"))
+			return
 		case "ping":
 			lsptelegram.SendToChat(chatID, mmsg.NewText("pong"))
 			return
 		case "help":
-			lsptelegram.SendToChat(chatID, mmsg.NewText("可用命令：/whosyourdaddy /list /watch /unwatch /enable /disable /grant /config /silence /abnormal /clean /noupdate /resubscribe /help /ping\n说明：在群聊中可省略 -g；站点默认 bilibili，仅在其他平台时使用 -s\n示例：/watch -s bilibili -t live 123456\n/resubscribe -g <群号> - 一键重新订阅该群的所有微博用户"))
+			lsptelegram.SendToChat(chatID, mmsg.NewText("可用命令：/whosyourdaddy /list /watch /unwatch /enable /disable /grant /config /silence /abnormal /clean /noupdate /resubscribe /bind /help /ping\n说明：在群聊中可省略 -g；站点默认 bilibili，仅在其他平台时使用 -s\n示例：/watch -s bilibili -t live 123456\n/resubscribe -g <群号> - 一键重新订阅该群的所有微博用户\n/bind <配对码> - 将当前 Telegram 群绑定到已创建的配对挑战"))
 			return
 		case "whosyourdaddy":
 			c := tgL.newTGContext(chatID, fromID, senderUin, 0)

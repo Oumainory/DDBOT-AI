@@ -432,7 +432,7 @@ func normalizeRouteOutcome(value string) string {
 
 func normalizeDeliveryStatus(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "sent", "queued", "not_sent", "unknown", "rejected":
+	case "sent", "queued", "not_sent", "unknown", "rejected", "migration_held":
 		return strings.ToLower(strings.TrimSpace(value))
 	default:
 		return "unknown"

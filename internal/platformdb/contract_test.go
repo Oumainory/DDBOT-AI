@@ -26,8 +26,8 @@ func TestMigrationDefinitionsAreOrderedAndIndependentlyChecksummed(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(definitions) != 7 {
-		t.Fatalf("migration count = %d, want 7", len(definitions))
+	if len(definitions) != 9 {
+		t.Fatalf("migration count = %d, want 9", len(definitions))
 	}
 	if definitions[0].version != 1 || definitions[0].filename != "001_core.sql" || definitions[0].name != "core" {
 		t.Fatalf("v1 definition = %#v", definitions[0])
@@ -70,6 +70,18 @@ func TestMigrationDefinitionsAreOrderedAndIndependentlyChecksummed(t *testing.T)
 	}
 	if definitions[6].checksum != "sha256:0e86818e76b02fa8e890576528bce02ba8b742abb604a37bdfe1b19490c3a8a5" {
 		t.Fatalf("v7 checksum changed: %s", definitions[6].checksum)
+	}
+	if definitions[7].version != 8 || definitions[7].filename != "008_connector_migration.sql" || definitions[7].name != "connector_migration" {
+		t.Fatalf("v8 definition = %#v", definitions[7])
+	}
+	if definitions[7].checksum != "sha256:7a4159e505b09cb076e0bf7f1ac83926a4edfa93937d1da779407ac747767675" {
+		t.Fatalf("v8 checksum changed: %s", definitions[7].checksum)
+	}
+	if definitions[8].version != 9 || definitions[8].filename != "009_observation_status.sql" || definitions[8].name != "observation_status" {
+		t.Fatalf("v9 definition = %#v", definitions[8])
+	}
+	if definitions[8].checksum != "sha256:8a9e89402297b8a8a46e563e37990394781c1f9ed78ca2590a62f89c79e3ec78" {
+		t.Fatalf("v9 checksum changed: %s", definitions[8].checksum)
 	}
 	for index, definition := range definitions {
 		if definition.version != index+1 {
@@ -571,7 +583,7 @@ func TestV6ToV7TakesBackupBeforeDomainSchemaMutation(t *testing.T) {
 	if got := store.LastPreMigrationBackupPath(); got != backupPath {
 		t.Fatalf("backup path = %q, want %q", got, backupPath)
 	}
-	if version, err := store.SchemaVersion(ctx); err != nil || version != 7 {
+	if version, err := store.SchemaVersion(ctx); err != nil || version != latestMigrationVersion(t) {
 		t.Fatalf("live schema version = %d, err = %v", version, err)
 	}
 	if err := store.Close(); err != nil {
@@ -739,12 +751,80 @@ func TestDefaultPreMigrationBackupDestinationIsDeterministic(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	want := databasePath + ".pre-migration-v1-to-v7-20231114T221320.123000000Z.sqlite"
+	want := databasePath + ".pre-migration-v1-to-v9-20231114T221320.123000000Z.sqlite"
 	if backupPath != want {
 		t.Fatalf("default backup path = %q, want %q", backupPath, want)
 	}
 	if !fileExists(want) {
 		t.Fatalf("default pre-migration backup %q was not created", want)
+	}
+}
+
+func TestV8ToV9ExtendsObservationStatusWithoutLosingRows(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	databasePath := filepath.Join(dir, "v8.sqlite")
+	backupPath := filepath.Join(dir, "v8-before-v9.sqlite")
+	createV8Database(t, databasePath)
+	db := openRawDatabase(t, databasePath)
+	mustExec(t, db, `INSERT INTO observed_events
+(id, schema_version, platform, source_kind, source_external_id, upstream_event_id,
+ event_type, observed_at, source_event_at, content_fingerprint,
+ public_snapshot_json, created_at)
+VALUES ('obs-v8', 1, 'bilibili', 'account', 'source', 'event-v8', 'dynamic',
+        1700000000, 1700000000, 'fingerprint', '{}', 1700000000)`)
+	mustExec(t, db, `INSERT INTO route_observations
+(id, event_id, route_ordinal, destination_kind, destination_external_id,
+ outcome, reason_code, observed_at, created_at)
+VALUES ('route-v8', 'obs-v8', 0, 'qq_group', '123', 'pass', 'legacy_pass',
+        1700000000, 1700000000)`)
+	mustExec(t, db, `INSERT INTO delivery_observations
+(id, event_id, route_observation_id, connector_kind, destination_external_id,
+ status, result_code, observed_at, created_at)
+VALUES ('delivery-v8', 'obs-v8', 'route-v8', 'onebot', '123', 'sent', 'sent',
+        1700000000, 1700000000)`)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(ctx, Config{
+		Path:               databasePath,
+		Now:                func() time.Time { return time.Unix(1700000000, 0).UTC() },
+		PreMigrationBackup: PreMigrationBackupConfig{Destination: backupPath},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store.LastPreMigrationBackupPath(); got != backupPath {
+		t.Fatalf("pre-migration backup path = %q, want %q", got, backupPath)
+	}
+	if version, err := store.SchemaVersion(ctx); err != nil || version != 9 {
+		t.Fatalf("live schema version = %d, err = %v", version, err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO delivery_observations
+(id, event_id, route_observation_id, connector_kind, destination_external_id,
+ status, result_code, observed_at, created_at)
+VALUES ('delivery-held', 'obs-v8', 'route-v8', 'onebot', '123',
+        'migration_held', 'migration_held', 1700000000, 1700000000)`); err != nil {
+		_ = store.Close()
+		t.Fatalf("insert migration_held observation = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	backup := openRawDatabase(t, backupPath)
+	if version := rawSchemaVersion(t, backup); version != 8 {
+		t.Fatalf("backup schema version = %d, want v8", version)
+	}
+	if count := rawInt(t, backup, "SELECT COUNT(*) FROM delivery_observations WHERE id = 'delivery-v8'"); count != 1 {
+		t.Fatalf("backup preserved delivery count = %d, want 1", count)
+	}
+	if err := backup.Close(); err != nil {
+		t.Fatal(err)
+	}
+	live := openRawDatabase(t, databasePath)
+	defer live.Close()
+	if count := rawInt(t, live, "SELECT COUNT(*) FROM delivery_observations WHERE status = 'migration_held'"); count != 1 {
+		t.Fatalf("live migration_held count = %d, want 1", count)
 	}
 }
 
@@ -1142,6 +1222,34 @@ func createV6Database(t *testing.T, path string) {
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func createV8Database(t *testing.T, path string) {
+	t.Helper()
+	createV6Database(t, path)
+	db := openRawDatabase(t, path)
+	defer db.Close()
+	definitions, err := migrationDefinitions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, definition := range definitions[6:8] {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec(definition.sql); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if _, err := tx.Exec("INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)", definition.version, definition.name, definition.checksum, 1700000000); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

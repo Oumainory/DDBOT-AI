@@ -7,20 +7,24 @@ import "strings"
 func ValidateConnectorTopology(connectors []Connector) error {
 	mainCount := 0
 	for _, connector := range connectors {
-		if !connector.Enabled {
-			continue
-		}
+		// Topology rules apply to disabled rows as well.  A disabled connector
+		// can later be enabled by a separate command, so allowing an invalid
+		// Telegram-main row to sit in the durable topology would merely defer
+		// the violation until that command (or migration recovery) runs.
 		if err := ValidateConnector(connector); err != nil {
 			return err
+		}
+		if connector.Kind == ConnectorTelegram && connector.Role != ConnectorExtra {
+			return ErrTopologyInvalid
+		}
+		if !connector.Enabled {
+			continue
 		}
 		if connector.Role == ConnectorMain {
 			mainCount++
 			if connector.Kind != ConnectorOneBot && connector.Kind != ConnectorSatori {
 				return ErrTopologyInvalid
 			}
-		}
-		if connector.Kind == ConnectorTelegram && connector.Role != ConnectorExtra {
-			return ErrTopologyInvalid
 		}
 	}
 	if mainCount > 1 {

@@ -200,6 +200,11 @@ type GroupMessage struct {
 	Sender    *SenderInfo
 	Time      int64
 	Elements  []IMessageElement
+	// MigrationHeld marks an accepted, durably persisted connector-migration
+	// hold. It is process-local delivery metadata and is intentionally omitted
+	// from serialized adapter payloads; a held delivery has its durable
+	// identity in delivery_migration_holds instead.
+	MigrationHeld bool `json:"-"`
 }
 
 // PrivateMessage represents a private message event.

@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -242,7 +243,12 @@ func IWatch(c *MessageContext, groupCode int64, id string, site string, watchTyp
 		return
 	}
 	log = log.WithField("mid", mid)
-	legacyService := subscription.NewService()
+	legacyService := c.Lsp.SubscriptionService
+	if legacyService == nil {
+		// Keep compatibility for tests or embedders that construct a minimal Lsp
+		// value instead of using the registered singleton.
+		legacyService = subscription.NewService()
+	}
 	if remove {
 		// unwatch
 		userInfo, _ := cm.Get(mid)
@@ -689,7 +695,7 @@ func IConfigFilterCmdClear(c *MessageContext, groupCode int64, id string, site s
 }
 
 func IConfigFilterCmdShow(c *MessageContext, groupCode int64, id string, site string, ctype concern_type.Type) {
-	err := iConfigCmd(c, groupCode, id, site, ctype, func(config concern.IConfig) bool {
+	err := iConfigCmdRead(c, groupCode, id, site, ctype, func(config concern.IConfig) bool {
 		if config.GetGroupConcernFilter().Empty() {
 			c.TextReply("当前配置为空")
 			return false
@@ -750,6 +756,22 @@ func IConfigFilterCmdShow(c *MessageContext, groupCode int64, id string, site st
 }
 
 func iConfigCmd(c *MessageContext, groupCode int64, id string, site string, ctype concern_type.Type, f func(config concern.IConfig) bool) (err error) {
+	return iConfigCmdInternal(c, groupCode, id, site, ctype, true, f)
+}
+
+func iConfigCmdRead(c *MessageContext, groupCode int64, id string, site string, ctype concern_type.Type, f func(config concern.IConfig) bool) (err error) {
+	return iConfigCmdInternal(c, groupCode, id, site, ctype, false, f)
+}
+
+func iConfigCmdInternal(c *MessageContext, groupCode int64, id string, site string, ctype concern_type.Type, enforceMutationGate bool, f func(config concern.IConfig) bool) (err error) {
+	if enforceMutationGate && c != nil && c.Lsp != nil {
+		service := c.Lsp.SubscriptionService
+		if service != nil {
+			if gateErr := service.GuardMutation(context.Background(), groupCode); gateErr != nil {
+				return gateErr
+			}
+		}
+	}
 	if err = configCmdGroupCommonCheck(c, groupCode); err != nil {
 		return err
 	}
@@ -1123,14 +1145,25 @@ func ICleanConcern(c *MessageContext, abnormal bool, groupCodes []int64, rawSite
 	}
 
 	var count int
-	for site, items := range itemMap {
-		cm, err := concern.GetConcernBySite(site)
-		if err != nil {
-			c.TextReply(fmt.Sprintf("失败 - %v", err))
-			return
-		}
+	legacyService := c.Lsp.SubscriptionService
+	if legacyService == nil {
+		legacyService = subscription.NewService()
+	}
+	// Validate every affected group before removing anything. This preserves
+	// the historical all-items collection phase while ensuring a migration
+	// cannot be bypassed by the bulk cleanup command or leave a half-cleaned
+	// result after encountering a frozen target.
+	for _, items := range itemMap {
 		for _, item := range items {
-			_, err = cm.Remove(c, item.groupCode, item.id, item.tp)
+			if gateErr := legacyService.GuardMutation(context.Background(), item.groupCode); gateErr != nil {
+				c.TextReply(fmt.Sprintf("失败 - %v", gateErr))
+				return
+			}
+		}
+	}
+	for site, items := range itemMap {
+		for _, item := range items {
+			_, err = legacyService.UnsubscribeTypesWithContext(context.Background(), c, subscription.Request{Site: site, ID: fmt.Sprint(item.id), GroupCode: item.groupCode}, item.tp)
 			if err == buntdb.ErrNotFound {
 				continue
 			} else if err != nil {

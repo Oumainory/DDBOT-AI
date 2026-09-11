@@ -285,6 +285,14 @@ WHERE name NOT LIKE 'sqlite_%'
 	if err := rows.Close(); err != nil {
 		return migrationInspection{}, fmt.Errorf("platformdb: close schema_migrations: %w", err)
 	}
+	// A schema_migrations table with no applied rows is not a fresh database:
+	// the table itself is created transactionally by applyMigrations and is
+	// therefore evidence that migration history was started or restored
+	// incompletely. Treat it as damaged history before any backup or schema
+	// mutation rather than silently replaying the entire migration chain.
+	if len(inspection.applied) == 0 {
+		return migrationInspection{}, fmt.Errorf("%w: schema_migrations is empty", ErrMigrationHistory)
+	}
 
 	known := make(map[int]migrationDefinition, len(definitions))
 	for _, definition := range definitions {

@@ -7,11 +7,14 @@ package subscription
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/cnxysoft/DDBOT-WSa/adapter"
 	"github.com/cnxysoft/DDBOT-WSa/internal/domain"
+	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
@@ -19,9 +22,48 @@ import (
 	"github.com/tidwall/buntdb"
 )
 
-type Service struct{}
+type Service struct {
+	mu           sync.RWMutex
+	mutationGate func(context.Context, int64) error
+}
 
 func NewService() *Service { return &Service{} }
+
+// SetMutationGate installs the optional migration gate for Legacy mutations.
+// It is instance-local and read-only from the Legacy storage perspective;
+// when unset, historical behavior is unchanged.
+func (s *Service) SetMutationGate(gate func(context.Context, int64) error) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.mutationGate = gate
+	s.mu.Unlock()
+}
+
+func (s *Service) checkMutationGate(ctx context.Context, groupCode int64) error {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	gate := s.mutationGate
+	s.mu.RUnlock()
+	if gate == nil {
+		return nil
+	}
+	if err := gate(ctx, groupCode); err != nil {
+		return err
+	}
+	return nil
+}
+
+// GuardMutation exposes the same optional migration gate to legacy command
+// handlers that perform a specialised configuration update directly through a
+// Concern StateManager. It does not inspect or mutate BuntDB; callers still
+// execute their historical operation unchanged after this cheap check.
+func (s *Service) GuardMutation(ctx context.Context, groupCode int64) error {
+	return s.checkMutationGate(ctxOrBackground(ctx), groupCode)
+}
 
 type Request struct {
 	Site      string
@@ -66,10 +108,21 @@ func (s *Service) resolve(request Request) (concern.Concern, interface{}, concer
 }
 
 func (s *Service) Subscribe(ctx context.Context, request Request) (concern.IdentityInfo, error) {
-	return s.SubscribeWithMessageContext(noopContext{groupCode: request.GroupCode}, request)
+	return s.SubscribeWithContext(ctx, noopContext{groupCode: request.GroupCode}, request)
 }
 
 func (s *Service) SubscribeWithMessageContext(msgCtx mmsg.IMsgCtx, request Request) (concern.IdentityInfo, error) {
+	return s.SubscribeWithContext(context.Background(), msgCtx, request)
+}
+
+// SubscribeWithContext is the context-aware mutation boundary used by HTTP
+// handlers and the shared Legacy command service. The historical
+// SubscribeWithMessageContext method remains available for callers that do
+// not carry a request context.
+func (s *Service) SubscribeWithContext(ctx context.Context, msgCtx mmsg.IMsgCtx, request Request) (concern.IdentityInfo, error) {
+	if err := s.checkMutationGate(ctxOrBackground(ctx), request.GroupCode); err != nil {
+		return nil, err
+	}
 	cm, id, ctype, err := s.resolve(request)
 	if err != nil {
 		return nil, err
@@ -81,10 +134,51 @@ func (s *Service) SubscribeWithMessageContext(msgCtx mmsg.IMsgCtx, request Reque
 }
 
 func (s *Service) Unsubscribe(ctx context.Context, request Request) (concern.IdentityInfo, error) {
-	return s.UnsubscribeWithMessageContext(noopContext{groupCode: request.GroupCode}, request)
+	return s.UnsubscribeWithContext(ctx, noopContext{groupCode: request.GroupCode}, request)
 }
 
 func (s *Service) UnsubscribeWithMessageContext(msgCtx mmsg.IMsgCtx, request Request) (concern.IdentityInfo, error) {
+	return s.UnsubscribeWithContext(context.Background(), msgCtx, request)
+}
+
+// UnsubscribeTypesWithMessageContext is the batch-cleanup counterpart to
+// UnsubscribeWithMessageContext. A Legacy concern can own several concrete
+// subscription types for one source, so cleanup passes the already-resolved
+// type set through this same service boundary instead of calling Concern.Remove
+// directly from a command handler. The migration gate is checked once before
+// the mutation, and the concern's historical combined-type removal semantics
+// remain unchanged.
+func (s *Service) UnsubscribeTypesWithMessageContext(msgCtx mmsg.IMsgCtx, request Request, types concern_type.Type) (concern.IdentityInfo, error) {
+	return s.UnsubscribeTypesWithContext(context.Background(), msgCtx, request, types)
+}
+
+// UnsubscribeTypesWithContext is the context-aware form used by command and
+// HTTP boundaries that already carry a request context.
+func (s *Service) UnsubscribeTypesWithContext(ctx context.Context, msgCtx mmsg.IMsgCtx, request Request, types concern_type.Type) (concern.IdentityInfo, error) {
+	if err := s.checkMutationGate(ctxOrBackground(ctx), request.GroupCode); err != nil {
+		return nil, err
+	}
+	parts := types.Split()
+	if len(parts) == 0 {
+		return nil, errors.New("subscription type is required")
+	}
+	request.Type = parts[0].String()
+	cm, id, _, err := s.resolve(request)
+	if err != nil {
+		return nil, err
+	}
+	if msgCtx == nil {
+		msgCtx = noopContext{groupCode: request.GroupCode}
+	}
+	return cm.Remove(msgCtx, request.GroupCode, id, types)
+}
+
+// UnsubscribeWithContext is the context-aware counterpart of
+// UnsubscribeWithMessageContext.
+func (s *Service) UnsubscribeWithContext(ctx context.Context, msgCtx mmsg.IMsgCtx, request Request) (concern.IdentityInfo, error) {
+	if err := s.checkMutationGate(ctxOrBackground(ctx), request.GroupCode); err != nil {
+		return nil, err
+	}
 	cm, id, ctype, err := s.resolve(request)
 	if err != nil {
 		return nil, err
@@ -99,6 +193,9 @@ func (s *Service) UnsubscribeWithMessageContext(msgCtx mmsg.IMsgCtx, request Req
 // does not expose a YAML/editor escape hatch and uses the same StateManager
 // transaction used by chat commands.
 func (s *Service) UpdateOptions(ctx context.Context, request Request, patch OptionsPatch) error {
+	if err := s.checkMutationGate(ctx, request.GroupCode); err != nil {
+		return err
+	}
 	cm, id, _, err := s.resolve(request)
 	if err != nil {
 		return err
@@ -188,3 +285,14 @@ func encodeOptions(options map[string]string) string {
 // IsNotFound is shared by the HTTP mapping and tests without making BuntDB a
 // second domain authority.
 func IsNotFound(err error) bool { return err == buntdb.ErrNotFound }
+
+func ctxOrBackground(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+// IsMigrationInProgress is exported for API error mapping without coupling
+// callers to the platformdb package's concrete repository.
+func IsMigrationInProgress(err error) bool { return errors.Is(err, platformdb.ErrMigrationInProgress) }

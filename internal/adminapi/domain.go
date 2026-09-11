@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -147,13 +146,13 @@ func decodeMetadata(raw string) any {
 func sourceDTOFrom(source domain.Source, count int) sourceDTO {
 	return sourceDTO{ID: source.ID, Platform: string(source.Platform), ExternalID: source.ExternalID, Handle: source.Handle,
 		DisplayName: source.DisplayName, CanonicalURL: source.CanonicalURL, Status: source.Status,
-		SubscriptionCount: count, Metadata: decodeMetadata(source.MetadataJSON), CreatedAt: timeDTO(source.CreatedAt), UpdatedAt: timeDTO(source.UpdatedAt)}
+		SubscriptionCount: count, Metadata: decodeSafeConfig(source.MetadataJSON), CreatedAt: timeDTO(source.CreatedAt), UpdatedAt: timeDTO(source.UpdatedAt)}
 }
 
 func targetDTOFrom(target domain.Target, connectorKind string, count int) targetDTO {
 	return targetDTO{ID: target.ID, ConnectorID: target.ConnectorID, ConnectorKind: connectorKind,
 		TargetType: string(target.TargetType), ExternalID: target.ExternalID, DisplayName: target.DisplayName,
-		Status: target.Status, SourceCount: count, Metadata: decodeMetadata(target.MetadataJSON),
+		Status: target.Status, SourceCount: count, Metadata: decodeSafeConfig(target.MetadataJSON),
 		CreatedAt: timeDTO(target.CreatedAt), UpdatedAt: timeDTO(target.UpdatedAt)}
 }
 
@@ -163,9 +162,36 @@ func connectorDTOFrom(connector domain.Connector) connectorDTO {
 		masked = "configured"
 	}
 	return connectorDTO{ID: connector.ID, Kind: connector.Kind, Name: connector.Name, Role: connector.Role,
-		Enabled: connector.Enabled, Status: connector.Status, Endpoint: connector.Endpoint,
+		Enabled: connector.Enabled, Status: connector.Status, Endpoint: safeConnectorEndpoint(connector.Endpoint),
 		CredentialConfigured: masked != "", CredentialMasked: masked, Config: decodeSafeConfig(connector.ConfigJSON),
-		Metadata: decodeMetadata(connector.MetadataJSON), CreatedAt: timeDTO(connector.CreatedAt), UpdatedAt: timeDTO(connector.UpdatedAt)}
+		Metadata: decodeSafeConfig(connector.MetadataJSON), CreatedAt: timeDTO(connector.CreatedAt), UpdatedAt: timeDTO(connector.UpdatedAt)}
+}
+
+// safeConnectorEndpoint is deliberately stricter than the domain storage
+// representation. Endpoints are operator-visible metadata, but they can
+// contain userinfo or sensitive query parameters when a legacy database was
+// edited by hand. Malformed input is omitted instead of echoed.
+func safeConnectorEndpoint(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	if parsed.User != nil {
+		parsed.User = url.User(parsed.User.Username())
+	}
+	query := parsed.Query()
+	for key := range query {
+		if sensitiveConfigKey(key) || strings.Contains(strings.ToLower(key), "credential") {
+			query.Set(key, "[redacted]")
+		}
+	}
+	parsed.RawQuery = query.Encode()
+	parsed.Fragment = ""
+	return parsed.String()
 }
 
 // decodeSafeConfig never exposes values that look like credentials, even if a
@@ -269,6 +295,18 @@ func readJSONBody(r *http.Request, target any) ([]byte, error) {
 }
 
 func (s *Server) executeDomainCommand(w http.ResponseWriter, r *http.Request, command string, body []byte, fn func() (int, apiEnvelope)) {
+	s.executeCommand(w, r, command, body, fn, nil)
+}
+
+// executeSanitizedReplayCommand is used for commands whose first response may
+// contain a one-time value (for example a Telegram pairing code). The value
+// is returned to the original caller but is removed from the durable replay
+// body, so an Idempotency-Key replay cannot reveal it a second time.
+func (s *Server) executeSanitizedReplayCommand(w http.ResponseWriter, r *http.Request, command string, body []byte, fn func() (int, apiEnvelope), sanitize func([]byte) []byte) {
+	s.executeCommand(w, r, command, body, fn, sanitize)
+}
+
+func (s *Server) executeCommand(w http.ResponseWriter, r *http.Request, command string, body []byte, fn func() (int, apiEnvelope), sanitize func([]byte) []byte) {
 	principal, ok := PrincipalFromContext(r.Context())
 	if !ok || strings.TrimSpace(principal.AdminID) == "" {
 		s.writeError(w, http.StatusUnauthorized, "unauthorized", "authentication required")
@@ -310,11 +348,30 @@ func (s *Server) executeDomainCommand(w http.ResponseWriter, r *http.Request, co
 		s.writeError(w, http.StatusInternalServerError, "domain_unavailable", "domain response unavailable")
 		return
 	}
-	if _, completeErr := s.idempotency.CompleteCommand(principal.AdminID, key, command, fingerprint, status, nil, raw, s.now()); completeErr != nil {
+	cached := raw
+	if sanitize != nil {
+		cached = sanitize(raw)
+	}
+	if _, completeErr := s.idempotency.CompleteCommand(principal.AdminID, key, command, fingerprint, status, nil, cached, s.now()); completeErr != nil {
 		s.writeError(w, http.StatusServiceUnavailable, "domain_unavailable", "domain response unavailable")
 		return
 	}
 	writeRawJSON(w, status, raw)
+}
+
+func stripPairingPlaintext(raw []byte) []byte {
+	var envelope map[string]any
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return []byte(`{"error":{"code":"pairing_unavailable","message":"pairing response unavailable"}}`)
+	}
+	if data, ok := envelope["data"].(map[string]any); ok {
+		delete(data, "code")
+	}
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		return []byte(`{"error":{"code":"pairing_unavailable","message":"pairing response unavailable"}}`)
+	}
+	return encoded
 }
 
 func writeRawJSON(w http.ResponseWriter, status int, body []byte) {
@@ -336,6 +393,8 @@ func domainError(err error) (int, string, string) {
 		return http.StatusConflict, "target_in_use", "target has active subscriptions"
 	case errors.Is(err, domain.ErrMigrationRequired):
 		return http.StatusConflict, "migration_required", "connector migration is required"
+	case errors.Is(err, platformdb.ErrMigrationInProgress):
+		return http.StatusConflict, "migration_in_progress", "connector migration is in progress"
 	case errors.Is(err, domain.ErrAmbiguousTarget):
 		return http.StatusConflict, "ambiguous_target", "target identity is ambiguous"
 	case errors.Is(err, platformdb.ErrSourceExists):
@@ -681,6 +740,9 @@ func (s *Server) patchTarget(w http.ResponseWriter, r *http.Request, id string) 
 			status, response := errorEnvelope(getErr)
 			return status, response
 		}
+		if gateErr := s.ensureTargetMutationAllowed(r.Context(), target.ID); gateErr != nil {
+			return migrationErrorEnvelope(gateErr)
+		}
 		if request.DisplayName != "" {
 			target.DisplayName = request.DisplayName
 		}
@@ -710,6 +772,9 @@ func (s *Server) deleteTarget(w http.ResponseWriter, r *http.Request, id string)
 	}
 	body, _ := io.ReadAll(r.Body)
 	s.executeDomainCommand(w, r, "delete_target", body, func() (int, apiEnvelope) {
+		if gateErr := s.ensureTargetMutationAllowed(r.Context(), id); gateErr != nil {
+			return migrationErrorEnvelope(gateErr)
+		}
 		if err := s.domainRepository.DeleteTarget(r.Context(), id); err != nil {
 			status, response := errorEnvelope(err)
 			return status, response
@@ -798,15 +863,10 @@ func (s *Server) patchConnector(w http.ResponseWriter, r *http.Request, id strin
 			return status, response
 		}
 		if request.Kind != "" && request.Kind != connector.Kind {
-			projections, projectionErr := s.domainRepository.ProjectionsForConnector(r.Context(), connector.ID)
-			if projectionErr != nil {
-				status, response := errorEnvelope(projectionErr)
-				return status, response
-			}
-			if len(projections) > 0 {
-				return errorEnvelope(domain.ErrMigrationRequired)
-			}
-			connector.Kind = request.Kind
+			// A connector kind change is a topology migration, even when no
+			// current projection happens to reference it. The migration wizard
+			// is the only path allowed to establish explicit target mappings.
+			return errorEnvelope(domain.ErrMigrationRequired)
 		}
 		if request.Name != "" {
 			connector.Name = request.Name
@@ -834,6 +894,22 @@ func (s *Server) patchConnector(w http.ResponseWriter, r *http.Request, id strin
 		if updateErr != nil {
 			status, response := errorEnvelope(updateErr)
 			return status, response
+		}
+		// Connector configuration changes are high-risk domain commands. The
+		// audit payload intentionally contains only safe topology fields; the
+		// endpoint and config object may contain operator-managed credentials.
+		principal, _ := PrincipalFromContext(r.Context())
+		if s.migrationRepository != nil {
+			metadata, _ := json.Marshal(map[string]any{"kind": updated.Kind, "role": updated.Role, "enabled": updated.Enabled, "status": updated.Status})
+			now := time.Now()
+			if s.now != nil {
+				now = s.now()
+			}
+			_, _ = s.migrationRepository.AppendAudit(r.Context(), platformdb.AuditEntry{
+				OccurredAt: now.UTC().Unix(), PrincipalID: principal.AdminID,
+				Action: "connector.configuration_commit", ResourceType: "connector",
+				ResourceID: updated.ID, Outcome: "success", IdempotencyKey: r.Header.Get("Idempotency-Key"), MetadataJSON: string(metadata),
+			})
 		}
 		return http.StatusOK, apiEnvelope{Data: connectorDTOFrom(updated)}
 	})
@@ -952,11 +1028,14 @@ func (s *Server) createSubscription(w http.ResponseWriter, r *http.Request) {
 			status, response := errorEnvelope(targetErr)
 			return status, response
 		}
+		if err := s.ensureTargetMutationAllowed(r.Context(), target.ID); err != nil {
+			return migrationErrorEnvelope(err)
+		}
 		connector, _ := s.domainRepository.Connector(r.Context(), target.ConnectorID)
 		if target.TargetType != domain.TargetGroup || connector.Kind != domain.ConnectorOneBot {
 			return errorEnvelope(errors.New("unsupported subscription target"))
 		}
-		groupCode, parseErr := strconv.ParseInt(target.ExternalID, 10, 64)
+		groupCode, parseErr := s.domainRepository.LegacyGroupCodeForTarget(r.Context(), target.ID)
 		if parseErr != nil || groupCode <= 0 {
 			return errorEnvelope(errors.New("invalid target external id"))
 		}
@@ -1021,6 +1100,9 @@ func (s *Server) patchSubscription(w http.ResponseWriter, r *http.Request, id st
 			status, response := errorEnvelope(getErr)
 			return status, response
 		}
+		if err := s.ensureTargetMutationAllowed(r.Context(), projection.TargetID); err != nil {
+			return migrationErrorEnvelope(err)
+		}
 		source, sourceErr := s.domainRepository.Source(r.Context(), projection.SourceID)
 		target, targetErr := s.domainRepository.Target(r.Context(), projection.TargetID)
 		if sourceErr != nil {
@@ -1031,7 +1113,7 @@ func (s *Server) patchSubscription(w http.ResponseWriter, r *http.Request, id st
 			status, response := errorEnvelope(targetErr)
 			return status, response
 		}
-		groupCode, parseErr := strconv.ParseInt(target.ExternalID, 10, 64)
+		groupCode, parseErr := s.domainRepository.LegacyGroupCodeForTarget(r.Context(), target.ID)
 		if parseErr != nil {
 			return errorEnvelope(errors.New("invalid target external id"))
 		}
@@ -1060,6 +1142,9 @@ func (s *Server) deleteSubscription(w http.ResponseWriter, r *http.Request, id s
 			status, response := errorEnvelope(getErr)
 			return status, response
 		}
+		if err := s.ensureTargetMutationAllowed(r.Context(), projection.TargetID); err != nil {
+			return migrationErrorEnvelope(err)
+		}
 		source, sourceErr := s.domainRepository.Source(r.Context(), projection.SourceID)
 		target, targetErr := s.domainRepository.Target(r.Context(), projection.TargetID)
 		if sourceErr != nil {
@@ -1070,7 +1155,7 @@ func (s *Server) deleteSubscription(w http.ResponseWriter, r *http.Request, id s
 			status, response := errorEnvelope(targetErr)
 			return status, response
 		}
-		groupCode, parseErr := strconv.ParseInt(target.ExternalID, 10, 64)
+		groupCode, parseErr := s.domainRepository.LegacyGroupCodeForTarget(r.Context(), target.ID)
 		if parseErr != nil {
 			return errorEnvelope(errors.New("invalid target external id"))
 		}

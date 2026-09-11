@@ -61,8 +61,22 @@ type Payload struct {
 	EventID       string          `json:"event_id"`
 	RouteID       string          `json:"route_decision_id"`
 	RouteSnapshot json.RawMessage `json:"route_snapshot"`
-	LogicalTarget LogicalTarget   `json:"logical_target"`
-	Message       MessageSnapshot `json:"message_snapshot"`
+	// LogicalTarget is retained for decoding the original v1 payload shape.
+	// New snapshots also expose the explicit logical_target_snapshot field;
+	// Marshal and Unmarshal keep both representations equivalent and never
+	// retain a process-local target object.
+	LogicalTarget         LogicalTarget   `json:"logical_target"`
+	LogicalTargetSnapshot LogicalTarget   `json:"logical_target_snapshot,omitempty"`
+	Message               MessageSnapshot `json:"message_snapshot"`
+	// The following fields make the v1 contract explicit for consumers that
+	// do not want to inspect MessageSnapshot. They are connector-neutral and
+	// remain optional for backwards-compatible rows created by Phase 0.
+	OrderedMessageSegments []Segment         `json:"ordered_message_segments,omitempty"`
+	TemplateIdentity       string            `json:"template_identity,omitempty"`
+	TemplateDigest         string            `json:"template_digest,omitempty"`
+	CreatedAt              int64             `json:"created_at,omitempty"`
+	HeldAt                 int64             `json:"held_at,omitempty"`
+	Metadata               map[string]string `json:"metadata,omitempty"`
 }
 
 func (p Payload) Validate() error {
@@ -84,18 +98,26 @@ func (p Payload) Validate() error {
 	if len(p.RouteSnapshot) == 0 || !json.Valid(p.RouteSnapshot) {
 		return ErrMissingRouteSnap
 	}
-	if strings.TrimSpace(p.LogicalTarget.TargetID) == "" ||
-		strings.TrimSpace(p.LogicalTarget.TargetType) == "" ||
-		strings.TrimSpace(p.LogicalTarget.ExternalID) == "" {
+	target := p.LogicalTarget
+	if strings.TrimSpace(target.TargetID) == "" {
+		target = p.LogicalTargetSnapshot
+	}
+	if strings.TrimSpace(target.TargetID) == "" ||
+		strings.TrimSpace(target.TargetType) == "" ||
+		strings.TrimSpace(target.ExternalID) == "" {
 		return ErrMissingTarget
 	}
 	if p.Message.SchemaVersion != CurrentSchemaVersion {
 		return fmt.Errorf("deliverysnapshot: unsupported message schema version %d", p.Message.SchemaVersion)
 	}
-	if len(p.Message.Segments) == 0 && strings.TrimSpace(p.Message.TextFallback) == "" {
+	segments := p.Message.Segments
+	if len(segments) == 0 {
+		segments = p.OrderedMessageSegments
+	}
+	if len(segments) == 0 && strings.TrimSpace(p.Message.TextFallback) == "" {
 		return ErrMissingMessage
 	}
-	for _, segment := range p.Message.Segments {
+	for _, segment := range segments {
 		if strings.TrimSpace(segment.Type) == "" {
 			return ErrMissingSegmentTyp
 		}
@@ -112,6 +134,21 @@ func (p Payload) Marshal() ([]byte, error) {
 	if err := p.Validate(); err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(p.LogicalTarget.TargetID) == "" {
+		p.LogicalTarget = p.LogicalTargetSnapshot
+	}
+	if strings.TrimSpace(p.LogicalTargetSnapshot.TargetID) == "" {
+		p.LogicalTargetSnapshot = p.LogicalTarget
+	}
+	if len(p.OrderedMessageSegments) == 0 {
+		p.OrderedMessageSegments = append([]Segment(nil), p.Message.Segments...)
+	}
+	if p.TemplateIdentity == "" {
+		p.TemplateIdentity = p.Message.TemplateName
+	}
+	if p.TemplateDigest == "" {
+		p.TemplateDigest = p.Message.TemplateHash
+	}
 	return json.Marshal(p)
 }
 
@@ -122,6 +159,21 @@ func Unmarshal(data []byte) (Payload, error) {
 	}
 	if err := p.Validate(); err != nil {
 		return Payload{}, err
+	}
+	if strings.TrimSpace(p.LogicalTarget.TargetID) == "" {
+		p.LogicalTarget = p.LogicalTargetSnapshot
+	}
+	if strings.TrimSpace(p.LogicalTargetSnapshot.TargetID) == "" {
+		p.LogicalTargetSnapshot = p.LogicalTarget
+	}
+	if len(p.Message.Segments) == 0 && len(p.OrderedMessageSegments) > 0 {
+		p.Message.Segments = append([]Segment(nil), p.OrderedMessageSegments...)
+	}
+	if p.Message.TemplateName == "" {
+		p.Message.TemplateName = p.TemplateIdentity
+	}
+	if p.Message.TemplateHash == "" {
+		p.Message.TemplateHash = p.TemplateDigest
 	}
 	return p, nil
 }

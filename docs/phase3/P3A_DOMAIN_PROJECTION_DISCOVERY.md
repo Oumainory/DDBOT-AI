@@ -2,7 +2,7 @@
 
 ## Durable boundary
 
-`internal/platformdb/migrations/007_domain_core.sql` 是 v7 authoritative migration；001–006 immutable。它建立：
+`internal/platformdb/migrations/007_domain_core.sql` 是 P3A v7 migration；P3B 的当前 latest schema 为 v9，且 001–007 immutable。v7 建立：
 
 - `sources`：平台和外部身份的唯一键 `(platform, external_id)`；
 - `connectors`：OneBot/Satori main 与 Telegram extra 的拓扑元数据；启用 main 有唯一 partial index；

@@ -57,10 +57,11 @@ func (r Report) HTTPStatus() int {
 // initErr is intentionally retained separately: callers can continue Legacy
 // startup after Open fails while still reporting a degraded platform.
 type Probe struct {
-	store   *Store
-	initErr error
-	auth    *AuthRepository
-	secret  DependencyChecker
+	store     *Store
+	initErr   error
+	auth      *AuthRepository
+	secret    DependencyChecker
+	migration *MigrationRepository
 }
 
 func NewProbe(store *Store, initErr error) Probe {
@@ -84,6 +85,16 @@ func NewProbeWithAuthAndSecret(store *Store, initErr error, secret DependencyChe
 	return probe
 }
 
+// SetMigrationRepository wires the optional connector-migration health view
+// without making migrations a prerequisite for the Legacy core. It is an
+// explicit owner action; no package-level database handle is introduced.
+func (p *Probe) SetMigrationRepository(repository *MigrationRepository) {
+	if p == nil {
+		return
+	}
+	p.migration = repository
+}
+
 func (p Probe) Health(ctx context.Context) Report {
 	report := Report{
 		Status: StatusHealthy,
@@ -95,12 +106,14 @@ func (p Probe) Health(ctx context.Context) Report {
 		report.Status = StatusDegraded
 		report.Checks["sqlite"] = Check{Status: CheckDegraded, Code: "sqlite_initialization_failed"}
 		p.addSecretHealth(ctx, &report)
+		p.addMigrationHealth(ctx, &report)
 		return report
 	}
 	if err := p.store.Ping(ctx); err != nil {
 		report.Status = StatusDegraded
 		report.Checks["sqlite"] = Check{Status: CheckDegraded, Code: "sqlite_unavailable"}
 		p.addSecretHealth(ctx, &report)
+		p.addMigrationHealth(ctx, &report)
 		return report
 	}
 	report.Checks["sqlite"] = Check{Status: CheckOK, Code: "sqlite_alive"}
@@ -116,6 +129,7 @@ func (p Probe) Health(ctx context.Context) Report {
 		}
 	}
 	p.addSecretHealth(ctx, &report)
+	p.addMigrationHealth(ctx, &report)
 	return report
 }
 
@@ -129,11 +143,13 @@ func (p Probe) Ready(ctx context.Context) Report {
 	if p.store == nil || p.initErr != nil {
 		report = notReady(report, "sqlite", "sqlite_initialization_failed")
 		p.addSecretReadiness(ctx, &report)
+		p.addMigrationReadiness(ctx, &report)
 		return report
 	}
 	if err := p.store.Ping(ctx); err != nil {
 		report = notReady(report, "sqlite", "sqlite_unavailable")
 		p.addSecretReadiness(ctx, &report)
+		p.addMigrationReadiness(ctx, &report)
 		return report
 	}
 	report.Checks["sqlite"] = Check{Status: CheckOK, Code: "sqlite_alive"}
@@ -141,18 +157,21 @@ func (p Probe) Ready(ctx context.Context) Report {
 	if err != nil {
 		report = notReady(report, "schema", "schema_unavailable")
 		p.addSecretReadiness(ctx, &report)
+		p.addMigrationReadiness(ctx, &report)
 		return report
 	}
 	definitions, err := migrationDefinitions()
 	if err != nil || len(definitions) == 0 {
 		report = notReady(report, "schema", "schema_definition_unavailable")
 		p.addSecretReadiness(ctx, &report)
+		p.addMigrationReadiness(ctx, &report)
 		return report
 	}
 	expected := definitions[len(definitions)-1].version
 	if version != expected {
 		report = notReady(report, "schema", "schema_version_mismatch")
 		p.addSecretReadiness(ctx, &report)
+		p.addMigrationReadiness(ctx, &report)
 		return report
 	}
 	report.Checks["schema"] = Check{Status: CheckOK, Code: "schema_current"}
@@ -161,6 +180,7 @@ func (p Probe) Ready(ctx context.Context) Report {
 		if err != nil {
 			report = notReady(report, "auth", "auth_unavailable")
 			p.addSecretReadiness(ctx, &report)
+			p.addMigrationReadiness(ctx, &report)
 			return report
 		}
 		if state == AuthSetupRequired {
@@ -170,7 +190,52 @@ func (p Probe) Ready(ctx context.Context) Report {
 		}
 	}
 	p.addSecretReadiness(ctx, &report)
+	p.addMigrationReadiness(ctx, &report)
 	return report
+}
+
+func (p Probe) addMigrationHealth(ctx context.Context, report *Report) {
+	if p.migration == nil {
+		return
+	}
+	values, err := p.migration.UnfinishedMigrations(ctx)
+	if err != nil {
+		report.Checks["migration"] = Check{Status: CheckDegraded, Code: "migration_status_unavailable"}
+		report.Status = StatusDegraded
+		return
+	}
+	for _, value := range values {
+		if value.State == MigrationRecovery {
+			report.Checks["migration"] = Check{Status: CheckDegraded, Code: "migration_recovery_required"}
+			report.Status = StatusDegraded
+			return
+		}
+	}
+	if len(values) > 0 {
+		report.Checks["migration"] = Check{Status: CheckOK, Code: "migration_active"}
+	} else {
+		report.Checks["migration"] = Check{Status: CheckOK, Code: "migration_idle"}
+	}
+}
+
+func (p Probe) addMigrationReadiness(ctx context.Context, report *Report) {
+	if p.migration == nil {
+		return
+	}
+	values, err := p.migration.UnfinishedMigrations(ctx)
+	if err != nil {
+		// Migration recovery is target-scoped maintenance. Keep core readiness
+		// intact while exposing the degraded condition to operators.
+		report.Checks["migration"] = Check{Status: CheckDegraded, Code: "migration_status_unavailable"}
+		return
+	}
+	for _, value := range values {
+		if value.State == MigrationRecovery {
+			report.Checks["migration"] = Check{Status: CheckDegraded, Code: "migration_recovery_required"}
+			return
+		}
+	}
+	report.Checks["migration"] = Check{Status: CheckOK, Code: "migration_ready"}
 }
 
 func (p Probe) addSecretHealth(ctx context.Context, report *Report) {

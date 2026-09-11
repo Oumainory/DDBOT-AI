@@ -179,6 +179,40 @@ func TestRecorderPersistsAllowlistedSnapshotsAndCorrelatesFacts(t *testing.T) {
 	}
 }
 
+func TestRecorderPersistsMigrationHeldDeliveryStatus(t *testing.T) {
+	repository := &recorderFakeRepository{}
+	recorder := NewRecorder(repository, Config{QueueSize: 4})
+	trace, ok := recorder.TryObserveEvent(testEventInput())
+	if !ok || !trace.Valid() {
+		t.Fatal("event was not accepted")
+	}
+	route, ok := recorder.TryObserveRoute(trace, RouteInput{
+		RouteOrdinal:          0,
+		DestinationKind:       "qq_group",
+		DestinationExternalID: "123456",
+		Outcome:               "pass",
+		ReasonCode:            "legacy_pass",
+	})
+	if !ok || !route.Valid() {
+		t.Fatal("route was not accepted")
+	}
+	if !recorder.ObserveDelivery(route, DeliveryInput{
+		ConnectorKind:         "onebot",
+		DestinationExternalID: "123456",
+		Status:                "migration_held",
+		ResultCode:            "migration_held",
+	}) {
+		t.Fatal("migration-held delivery was not accepted")
+	}
+	if err := recorder.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, _, deliveries := repository.snapshot()
+	if len(deliveries) != 1 || deliveries[0].Status != "migration_held" || deliveries[0].ResultCode != "migration_held" {
+		t.Fatalf("delivery = %#v, want migration_held", deliveries)
+	}
+}
+
 func TestRecorderQueueFullIsNonBlockingAndTraceBecomesInvalid(t *testing.T) {
 	repository := &recorderFakeRepository{entered: make(chan struct{}), release: make(chan struct{})}
 	recorder := NewRecorder(repository, Config{QueueSize: 1})

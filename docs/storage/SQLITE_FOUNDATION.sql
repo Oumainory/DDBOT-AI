@@ -1,4 +1,4 @@
--- DDBOT-AI current v7 schema reference (non-authoritative).
+-- DDBOT-AI current v9 schema reference (non-authoritative).
 -- The authoritative, immutable history is internal/platformdb/migrations/*.sql.
 -- The Core will execute these statements on the single SQLite owner
 -- connection with foreign_keys=ON, WAL, and a busy timeout.
@@ -55,11 +55,98 @@ CREATE TABLE IF NOT EXISTS delivery_migration_holds (
         CHECK (route_decision_id IS NULL OR length(trim(route_decision_id)) > 0),
     status TEXT NOT NULL DEFAULT 'migration_held'
         CHECK (status = 'migration_held'),
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    release_state TEXT NOT NULL DEFAULT 'held'
+        CHECK (release_state IN ('held', 'releasing', 'released', 'unknown', 'failed')),
+    release_attempts INTEGER NOT NULL DEFAULT 0,
+    claimed_at INTEGER,
+    released_at INTEGER,
+    last_result_code TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_delivery_migration_holds_migration
     ON delivery_migration_holds (migration_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_delivery_migration_holds_release
+    ON delivery_migration_holds (migration_id, release_state, created_at);
+
+-- Phase 3B additive journal, explicit mapping, pairing and audit contracts.
+-- See internal/platformdb/migrations/008_connector_migration.sql and
+-- 009_observation_status.sql for the authoritative, independently checksummed
+-- statements.
+CREATE TABLE IF NOT EXISTS connector_migrations (
+    migration_id TEXT PRIMARY KEY,
+    old_connector_id TEXT NOT NULL,
+    new_connector_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER,
+    old_topology_snapshot_json TEXT NOT NULL DEFAULT '{}',
+    new_topology_snapshot_json TEXT NOT NULL DEFAULT '{}',
+    mapping_snapshot_json TEXT NOT NULL DEFAULT '[]',
+    affected_target_ids_json TEXT NOT NULL DEFAULT '[]',
+    rollback_expires_at INTEGER,
+    error_code TEXT NOT NULL DEFAULT '',
+    progress_marker TEXT NOT NULL DEFAULT 'draft',
+    confirmed_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS connector_migration_mappings (
+    migration_id TEXT NOT NULL,
+    old_target_id TEXT NOT NULL,
+    old_connector_id TEXT NOT NULL,
+    old_target_type TEXT NOT NULL,
+    old_external_id TEXT NOT NULL,
+    new_target_id TEXT,
+    new_connector_id TEXT,
+    new_target_type TEXT,
+    new_external_id TEXT,
+    mapping_status TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (migration_id, old_target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_connector_migration_mappings_new
+    ON connector_migration_mappings (migration_id, new_target_id);
+
+CREATE TABLE IF NOT EXISTS telegram_pairing_challenges (
+    challenge_id TEXT PRIMARY KEY,
+    connector_id TEXT NOT NULL,
+    code_sha256 TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    consumed_at INTEGER,
+    locked_at INTEGER,
+    admin_id TEXT NOT NULL DEFAULT '',
+    session_id TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_telegram_pairing_active
+    ON telegram_pairing_challenges (connector_id, expires_at, consumed_at);
+
+CREATE TABLE IF NOT EXISTS audit_entries (
+    id TEXT PRIMARY KEY,
+    occurred_at INTEGER NOT NULL,
+    principal_id TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL,
+    resource_type TEXT NOT NULL,
+    resource_id TEXT NOT NULL DEFAULT '',
+    outcome TEXT NOT NULL,
+    request_id TEXT NOT NULL DEFAULT '',
+    idempotency_key TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    prev_hash TEXT NOT NULL DEFAULT '',
+    entry_hash TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_entries_occurred_at
+    ON audit_entries (occurred_at, id);
+
+CREATE INDEX IF NOT EXISTS idx_connector_migrations_state
+    ON connector_migrations (state, updated_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_connector_migrations_one_active
+    ON connector_migrations ((1))
+    WHERE state IN ('draft', 'preparing', 'preflight_ready', 'committing', 'recovery_required');
 
 CREATE TABLE IF NOT EXISTS administrators (
     id TEXT PRIMARY KEY,
@@ -207,7 +294,7 @@ CREATE TABLE IF NOT EXISTS delivery_observations (
     route_observation_id TEXT NOT NULL,
     connector_kind TEXT NOT NULL,
     destination_external_id TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('sent', 'queued', 'not_sent', 'unknown', 'rejected')),
+    status TEXT NOT NULL CHECK (status IN ('sent', 'queued', 'not_sent', 'unknown', 'rejected', 'migration_held')),
     result_code TEXT NOT NULL,
     observed_at INTEGER NOT NULL,
     created_at INTEGER NOT NULL,

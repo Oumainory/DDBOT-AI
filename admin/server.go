@@ -17,18 +17,23 @@ import (
 	"github.com/cnxysoft/DDBOT-WSa/internal/adminapi"
 	"github.com/cnxysoft/DDBOT-WSa/internal/auth"
 	"github.com/cnxysoft/DDBOT-WSa/internal/buildinfo"
+	"github.com/cnxysoft/DDBOT-WSa/internal/domain"
 	"github.com/cnxysoft/DDBOT-WSa/internal/idempotency"
+	"github.com/cnxysoft/DDBOT-WSa/internal/migration"
 	"github.com/cnxysoft/DDBOT-WSa/internal/observation"
 	"github.com/cnxysoft/DDBOT-WSa/internal/origin"
+	"github.com/cnxysoft/DDBOT-WSa/internal/pairing"
 	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
 	"github.com/cnxysoft/DDBOT-WSa/internal/runtimeconfig"
 	"github.com/cnxysoft/DDBOT-WSa/internal/secretstore"
 	"github.com/cnxysoft/DDBOT-WSa/internal/session"
 	"github.com/cnxysoft/DDBOT-WSa/internal/webui"
+	ddbotlsp "github.com/cnxysoft/DDBOT-WSa/lsp"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/subscription"
+	ddbottelegram "github.com/cnxysoft/DDBOT-WSa/lsp/telegram"
 	"github.com/ghodss/yaml"
 	"github.com/sirupsen/logrus"
 	"go.uber.org/atomic"
@@ -157,6 +162,7 @@ type Server struct {
 	platformStore       *platformdb.Store
 	observationRecorder *observation.Recorder
 	restoreObservation  func()
+	legacySubscriptions *subscription.Service
 }
 
 // PlatformConfig controls the opt-in Phase 1 platform foundation mounted next to
@@ -243,6 +249,7 @@ func start(online *atomic.Bool, alive *atomic.Bool, platform *PlatformConfig) (*
 		s.platformStore = store
 		s.observationRecorder = platformHTTP.observationRecorder
 		s.restoreObservation = platformHTTP.restoreObservation
+		s.legacySubscriptions = platformHTTP.legacySubscriptions
 		mux.Handle("/api/v2/", platformHTTP.handler)
 		mux.Handle("/healthz", platformHTTP.probe.Healthz())
 		mux.Handle("/readyz", platformHTTP.probe.Readyz())
@@ -311,6 +318,7 @@ type platformHTTP struct {
 	observationRecorder *observation.Recorder
 	restoreObservation  func()
 	domainRepository    *platformdb.DomainRepository
+	legacySubscriptions *subscription.Service
 }
 
 func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP, *platformdb.Store, error) {
@@ -335,12 +343,69 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 	var observationRepository *platformdb.ObservationRepository
 	var recorder *observation.Recorder
 	var domainRepository *platformdb.DomainRepository
+	var migrationRepository *platformdb.MigrationRepository
+	var migrationCoordinator *migration.Coordinator
+	var pairingService *pairing.Service
+	legacySubscriptions := subscription.NewService()
 	if store != nil {
 		observationRepository = platformdb.NewObservationRepository(store)
 		recorder = observation.NewRecorder(observationRepository, observation.Config{})
 		domainRepository = platformdb.NewDomainRepository(store)
+		migrationRepository = platformdb.NewMigrationRepository(store)
+		pairingService = pairing.New(pairing.Config{Repository: migrationRepository, Domain: domainRepository})
+		migrationCoordinator = migration.NewCoordinator(migration.Config{
+			Repository: migrationRepository,
+			Domain:     domainRepository,
+			ProjectionRebuilder: func(ctx context.Context) error {
+				records, snapshotErr := legacySubscriptions.Snapshot(ctx)
+				if snapshotErr != nil {
+					return snapshotErr
+				}
+				return domainRepository.RebuildProjection(ctx, records)
+			},
+		})
+		probe.SetMigrationRepository(migrationRepository)
 	}
-	legacySubscriptions := subscription.NewService()
+	// The root LSP command handlers and the /api/v2 domain handlers must share
+	// this exact service instance so migration mutation gates cover every
+	// Legacy write boundary. Installing the instance is a pure pointer wiring
+	// operation; it does not start work or alter BuntDB on import.
+	ddbotlsp.Instance.SetSubscriptionService(legacySubscriptions)
+	if pairingService != nil {
+		// Telegram's incoming `/bind CODE` command carries no challenge id.
+		// Resolve it by digest in the pairing service, then let the adapter
+		// verify canonical chat identity, membership and sendability. The
+		// callback never logs or echoes the plaintext code.
+		ddbotlsp.Instance.SetTelegramBindHandler(func(ctx context.Context, chatID, _ int64, code string) error {
+			_, err := pairingService.VerifyTargetByCode(ctx, code, pairing.Verification{
+				TargetType: domain.TargetGroup,
+				ExternalID: strconv.FormatInt(chatID, 10),
+			}, ddbottelegram.PairingVerifier{})
+			return err
+		})
+	} else {
+		ddbotlsp.Instance.SetTelegramBindHandler(nil)
+	}
+	if migrationCoordinator != nil && migrationRepository != nil && domainRepository != nil {
+		// Install the pre-Messenger hold boundary only when the durable Phase 3
+		// owner is available. Outside a committing migration the callback is a
+		// no-op, so Legacy delivery remains unchanged; during a migration it
+		// persists the connector-neutral payload before any Messenger call.
+		installMigrationHoldHooks(newLegacyMigrationHolder(migrationCoordinator, migrationRepository, domainRepository, nil))
+	} else {
+		ddbotlsp.Instance.SetMigrationHoldHook(nil)
+		ddbotlsp.Instance.SetMigrationForwardHoldHook(nil)
+	}
+	if migrationCoordinator != nil {
+		// Recovery is synchronous and bounded: before this process can accept
+		// affected delivery work, unfinished journals are classified and either
+		// rolled back or resumed from their durable progress marker. The
+		// projection bridge is installed before recovery so a resumed migration
+		// cannot be marked completed against a stale SQLite projection.
+		if recoveryErr := migrationCoordinator.Recover(context.Background()); recoveryErr != nil {
+			logrus.WithError(recoveryErr).Warn("DDBOT-AI connector migration recovery degraded")
+		}
+	}
 	authService := auth.NewService(repository, auth.Config{})
 	apiServer, err := adminapi.NewServer(adminapi.Config{
 		Auth:                  authService,
@@ -353,6 +418,10 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 		ObservationRepository: observationRepository,
 		ObservationRecorder:   recorder,
 		DomainRepository:      domainRepository,
+		MigrationRepository:   migrationRepository,
+		MigrationCoordinator:  migrationCoordinator,
+		PairingService:        pairingService,
+		PairingVerifier:       ddbottelegram.PairingVerifier{},
 		LegacySubscriptions:   legacySubscriptions,
 		Idempotency:           idempotency.NewMemoryStore(idempotency.DefaultRetention),
 	})
@@ -402,6 +471,7 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 		observationRecorder: recorder,
 		restoreObservation:  restoreObservation,
 		domainRepository:    domainRepository,
+		legacySubscriptions: legacySubscriptions,
 	}, store, nil
 }
 
@@ -446,6 +516,13 @@ func (s *Server) Close() error {
 		return nil
 	}
 	var firstErr error
+	// The Legacy LSP is process-global for historical reasons, while the
+	// migration/pairing callbacks are owned by this optional platform server.
+	// Clear those callbacks before closing their captured SQLite owner so a
+	// later Legacy send cannot retain a pointer to a closed platform store.
+	ddbotlsp.Instance.SetMigrationHoldHook(nil)
+	ddbotlsp.Instance.SetMigrationForwardHoldHook(nil)
+	ddbotlsp.Instance.SetTelegramBindHandler(nil)
 	if s.httpServer != nil {
 		if err := s.httpServer.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			firstErr = err
@@ -568,10 +645,19 @@ func (s *Server) handleAddSub(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := &mockMsgCtx{groupCode: req.GroupCode}
-	_, err := subscription.NewService().SubscribeWithMessageContext(ctx, subscription.Request{
+	service := s.legacySubscriptions
+	if service == nil {
+		service = subscription.NewService()
+	}
+	_, err := service.SubscribeWithContext(r.Context(), ctx, subscription.Request{
 		Site: req.Site, ID: parseIdToString(req.ID), Type: req.Type, GroupCode: req.GroupCode,
 	})
 	if err != nil {
+		if subscription.IsMigrationInProgress(err) {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "migration_in_progress"})
+			return
+		}
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
@@ -591,10 +677,19 @@ func (s *Server) handleRemoveSub(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := &mockMsgCtx{groupCode: req.GroupCode}
-	_, err := subscription.NewService().UnsubscribeWithMessageContext(ctx, subscription.Request{
+	service := s.legacySubscriptions
+	if service == nil {
+		service = subscription.NewService()
+	}
+	_, err := service.UnsubscribeWithContext(r.Context(), ctx, subscription.Request{
 		Site: req.Site, ID: parseIdToString(req.ID), Type: req.Type, GroupCode: req.GroupCode,
 	})
 	if err != nil {
+		if subscription.IsMigrationInProgress(err) {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "migration_in_progress"})
+			return
+		}
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 		return
@@ -707,6 +802,13 @@ func (s *Server) handleSubConfig(w http.ResponseWriter, r *http.Request) {
 		}
 
 		sm := targetConcern.GetStateManager()
+		if service := s.legacySubscriptions; service != nil {
+			if gateErr := service.GuardMutation(r.Context(), req.GroupCode); gateErr != nil {
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "migration_in_progress"})
+				return
+			}
+		}
 		err = sm.OperateGroupConcernConfig(req.GroupCode, parsedId, req.Config, func(IConfig concern.IConfig) bool {
 			return true
 		})

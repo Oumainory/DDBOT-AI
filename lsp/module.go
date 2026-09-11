@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -24,6 +25,7 @@ import (
 	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/permission"
+	"github.com/cnxysoft/DDBOT-WSa/lsp/subscription"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/template"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/version"
 	"github.com/cnxysoft/DDBOT-WSa/proxy_pool"
@@ -69,7 +71,27 @@ type Lsp struct {
 
 	PermissionStateManager *permission.StateManager
 	LspStateManager        *StateManager
-	started                atomic.Bool
+	// SubscriptionService is the single Legacy mutation boundary shared by
+	// chat commands, Telegram commands and the Dashboard. It remains
+	// instance-local so tests and embedders can opt into a migration gate
+	// without introducing package-global storage or side effects.
+	SubscriptionService *subscription.Service
+	// TelegramBindHandler is installed by the platform owner when the Phase 3
+	// pairing repository is available. The incoming adapter passes only the
+	// chat/user identity and the one-time code; the handler performs all
+	// durable lookup and Telegram verification. Keeping this as a narrow
+	// callback avoids importing the admin/API layer into Legacy command code.
+	TelegramBindHandler func(context.Context, int64, int64, string) error
+	// MigrationHoldHook is an optional, platform-owned boundary invoked after
+	// Legacy has rendered and filtered a group message but immediately before
+	// the Messenger call. A true result means the payload was durably held for
+	// an active connector migration and the Messenger must not be called. The
+	// zero value is deliberately nil so non-migration behavior is unchanged.
+	MigrationHoldHook func(context.Context, *adapter.SendingMessage, mmsg.Target, observation.RouteTrace) (held bool, err error)
+	// MigrationForwardHoldHook is the equivalent boundary for merge-forward
+	// messages, whose Legacy path uses a separate Messenger method.
+	MigrationForwardHoldHook func(context.Context, int64, []map[string]interface{}, *adapter.ForwardOptions, observation.RouteTrace) (held bool, err error)
+	started                  atomic.Bool
 }
 
 func (l *Lsp) CommandShowName(command string) string {
@@ -1181,9 +1203,11 @@ func (l *Lsp) SendMsgObserved(m *mmsg.MSG, target mmsg.Target, routeTrace observ
 				res = append(res, &adapter.PrivateMessage{ID: int64(msgID), UserID: target.TargetCode()})
 			}
 		case mmsg.TargetGroup:
-			msgID, _, err := l.sendGroupForwardMessageObserved(target.TargetCode(), forwardNodes, forwardOptions, routeTrace)
+			msgID, _, held, err := l.sendGroupForwardMessageObservedResult(target.TargetCode(), forwardNodes, forwardOptions, routeTrace)
 			if err != nil {
 				res = append(res, &adapter.GroupMessage{ID: -1})
+			} else if held {
+				res = append(res, &adapter.GroupMessage{ID: 0, GroupCode: target.TargetCode(), MigrationHeld: true})
 			} else {
 				res = append(res, &adapter.GroupMessage{ID: int64(msgID), GroupCode: target.TargetCode()})
 			}
@@ -1314,6 +1338,19 @@ func (l *Lsp) sendGroupMessageObserved(groupCode int64, msg *adapter.SendingMess
 		logger.WithFields(localutils.GroupLogFields(groupCode)).Debug("send with empty group message")
 		return &adapter.GroupMessage{ID: -1, GroupCode: groupCode}
 	}
+	if l.MigrationHoldHook != nil {
+		held, holdErr := l.MigrationHoldHook(context.Background(), msg, mmsg.NewGroupTarget(groupCode), routeTrace)
+		if holdErr != nil {
+			// A migration hook error is a deliberate fail-closed result for the
+			// affected delivery. Crucially, the Messenger is not called with an
+			// ambiguous connector route.
+			return &adapter.GroupMessage{ID: -1, GroupCode: groupCode, Elements: msg.Elements}
+		}
+		if held {
+			observeMigrationHeldDelivery(groupCode, routeTrace)
+			return &adapter.GroupMessage{ID: 0, GroupCode: groupCode, Elements: msg.Elements, MigrationHeld: true}
+		}
+	}
 	var newstring = msgstringer.AdapterMsgToString(msg.Elements)
 	ret := bot.Instance.SendGroupMessage(groupCode, msg, newstring)
 	if routeTrace.Valid() {
@@ -1382,8 +1419,23 @@ func (l *Lsp) sendGroupForwardMessage(groupCode int64, nodes []map[string]interf
 }
 
 func (l *Lsp) sendGroupForwardMessageObserved(groupCode int64, nodes []map[string]interface{}, options *adapter.ForwardOptions, routeTrace observation.RouteTrace) (int32, string, error) {
+	messageID, response, _, err := l.sendGroupForwardMessageObservedResult(groupCode, nodes, options, routeTrace)
+	return messageID, response, err
+}
+
+func (l *Lsp) sendGroupForwardMessageObservedResult(groupCode int64, nodes []map[string]interface{}, options *adapter.ForwardOptions, routeTrace observation.RouteTrace) (int32, string, bool, error) {
 	if bot.Instance == nil {
-		return -1, "", fmt.Errorf("bot not initialized")
+		return -1, "", false, fmt.Errorf("bot not initialized")
+	}
+	if l.MigrationForwardHoldHook != nil {
+		held, holdErr := l.MigrationForwardHoldHook(context.Background(), groupCode, nodes, options, routeTrace)
+		if holdErr != nil {
+			return -1, "", false, holdErr
+		}
+		if held {
+			observeMigrationHeldDelivery(groupCode, routeTrace)
+			return 0, "", true, nil
+		}
 	}
 	messageID, response, err := bot.Instance.SendGroupForwardMessage(groupCode, nodes, options)
 	if routeTrace.Valid() {
@@ -1399,7 +1451,7 @@ func (l *Lsp) sendGroupForwardMessageObserved(groupCode int64, nodes []map[strin
 			ResultCode:            resultCode,
 		})
 	}
-	return messageID, response, err
+	return messageID, response, false, err
 }
 
 func observationForwardStatus(err error) (string, string) {
@@ -1413,6 +1465,27 @@ func observationForwardStatus(err error) (string, string) {
 		return "rejected", "rejected"
 	}
 	return "unknown", "transport_unknown"
+}
+
+// observeMigrationHeldDelivery records the explicit controlled-maintenance
+// outcome before returning a held result to Legacy. It is deliberately a
+// best-effort Phase 2 observation hook: the migration hold itself remains the
+// durable source of truth, and an unavailable recorder must never cause the
+// Messenger to be called or alter the Legacy result.
+func observeMigrationHeldDelivery(groupCode int64, routeTrace observation.RouteTrace) {
+	if !routeTrace.Valid() {
+		return
+	}
+	connector := "legacy"
+	if bot.Instance != nil && bot.Instance.Messenger != nil && bot.Instance.Messenger.Adapter != nil {
+		connector = normalizeObservationConnector(bot.Instance.Messenger.Adapter.GetAdapterName())
+	}
+	observation.ObserveDelivery(routeTrace, observation.DeliveryInput{
+		ConnectorKind:         connector,
+		DestinationExternalID: fmt.Sprintf("%d", groupCode),
+		Status:                "migration_held",
+		ResultCode:            "migration_held",
+	})
 }
 
 // sendPrivateForwardMessage 发送私聊合并转发消息
@@ -1430,7 +1503,48 @@ var Instance = &Lsp{
 	msgLimit:               semaphore.NewWeighted(3),
 	PermissionStateManager: permission.NewStateManager(),
 	LspStateManager:        NewStateManager(),
+	SubscriptionService:    subscription.NewService(),
 	cron:                   cron.New(cron.WithLogger(cron.VerbosePrintfLogger(cronLog))),
+}
+
+// SetSubscriptionService installs the shared Legacy mutation service used by
+// command handlers. A nil value is ignored so callers cannot accidentally
+// disable the historical service boundary.
+func (l *Lsp) SetSubscriptionService(service *subscription.Service) {
+	if l == nil || service == nil {
+		return
+	}
+	l.SubscriptionService = service
+}
+
+// SetTelegramBindHandler installs (or clears) the optional `/bind CODE`
+// boundary. It is a pure pointer assignment and performs no network or DB
+// work; nil is meaningful when the platform database is unavailable.
+func (l *Lsp) SetTelegramBindHandler(handler func(context.Context, int64, int64, string) error) {
+	if l == nil {
+		return
+	}
+	l.TelegramBindHandler = handler
+}
+
+// SetMigrationHoldHook installs the optional pre-Messenger delivery boundary.
+// It is intended to be wired once during platform bootstrap; nil clears it
+// for embedders and tests. The setter itself performs no I/O and starts no
+// goroutine.
+func (l *Lsp) SetMigrationHoldHook(handler func(context.Context, *adapter.SendingMessage, mmsg.Target, observation.RouteTrace) (bool, error)) {
+	if l == nil {
+		return
+	}
+	l.MigrationHoldHook = handler
+}
+
+// SetMigrationForwardHoldHook installs the corresponding boundary for merge
+// forward deliveries.
+func (l *Lsp) SetMigrationForwardHoldHook(handler func(context.Context, int64, []map[string]interface{}, *adapter.ForwardOptions, observation.RouteTrace) (bool, error)) {
+	if l == nil {
+		return
+	}
+	l.MigrationForwardHoldHook = handler
 }
 
 func init() {

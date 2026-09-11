@@ -64,8 +64,13 @@ func TestOpenConfiguresSQLiteAndAppliesMigration(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(versions) != 7 || versions[0] != 1 || versions[1] != 2 || versions[2] != 3 || versions[3] != 4 || versions[4] != 5 || versions[5] != 6 || versions[6] != 7 {
-		t.Fatalf("migration order = %#v, want [1 2 3 4 5 6 7]", versions)
+	if len(versions) != latestMigrationVersion(t) {
+		t.Fatalf("migration order = %#v, want 1..%d", versions, latestMigrationVersion(t))
+	}
+	for index, version := range versions {
+		if version != index+1 {
+			t.Fatalf("migration order = %#v", versions)
+		}
 	}
 	var tableName string
 	if err := store.db.QueryRowContext(ctx,
@@ -115,6 +120,28 @@ func TestOpenRejectsFutureSchemaWithoutDowngrading(t *testing.T) {
 	second, err := Open(ctx, Config{Path: databasePath})
 	if second != nil || !errors.Is(err, ErrFutureSchema) {
 		t.Fatalf("Open(future schema) = store %v, err %v", second, err)
+	}
+}
+
+func TestOpenRejectsEmptyMigrationHistory(t *testing.T) {
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "empty-history.sqlite")
+	db := openRawDatabase(t, databasePath)
+	if _, err := db.ExecContext(ctx, `CREATE TABLE schema_migrations (
+version INTEGER PRIMARY KEY,
+name TEXT NOT NULL,
+checksum TEXT NOT NULL,
+applied_at INTEGER NOT NULL
+)`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(ctx, Config{Path: databasePath})
+	if store != nil || !errors.Is(err, ErrMigrationHistory) {
+		t.Fatalf("Open(empty migration history) = store %v, err %v", store, err)
 	}
 }
 

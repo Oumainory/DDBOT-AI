@@ -252,7 +252,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           set -euo pipefail
-          for package in secretstore auth adminauth adminapi buildinfo webui session csrf origin observation; do
+          for package in secretstore auth adminauth adminapi buildinfo webui session csrf origin observation migration deliverysnapshot pairing audit; do
             go build -trimpath -buildmode=archive -o "build/${package}-${GOOS}-${GOARCH}.a" "./internal/${package}"
           done
 
