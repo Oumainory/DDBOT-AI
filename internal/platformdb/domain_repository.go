@@ -19,7 +19,12 @@ var (
 	ErrConnectorNotFound  = errors.New("platformdb: connector not found")
 	ErrProjectionNotFound = errors.New("platformdb: subscription projection not found")
 	ErrDomainUnavailable  = errors.New("platformdb: domain unavailable")
-	ErrProjectionDegraded = errors.New("platformdb: legacy applied; projection degraded")
+	ErrProjectionDegraded = errors.New("platformdb: projection degraded")
+	// ErrLegacyAppliedProjectionDegraded tells a command caller that the
+	// authoritative Legacy mutation succeeded but the rebuildable SQLite
+	// projection could not be updated. It is intentionally distinct from a
+	// read-time projection health failure.
+	ErrLegacyAppliedProjectionDegraded = errors.New("platformdb: legacy applied; projection degraded")
 )
 
 // DomainRepository owns only the Phase 3 metadata/projection tables. It never

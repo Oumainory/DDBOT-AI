@@ -25,6 +25,8 @@ authenticated command
 
 启动时和 `GET /api/v2/subscriptions` 读取前会进行 best-effort snapshot/reconciliation。SQLite 失败只返回 degraded/domain-unavailable，不阻止 Legacy 采集和推送。Projection rebuild 在 SQLite 事务内清空并写入完整 snapshot；它不会写回或修复 BuntDB。
 
+如果 Domain command 已经成功修改 BuntDB、但随后 projection rebuild 失败，API 返回稳定错误码 `legacy_applied_projection_degraded`；读取路径的独立降级仍使用 `projection_degraded`。这不会回滚或覆盖 BuntDB。
+
 ## Discovery safety
 
 Discovery 只接受 Bilibili 官方 host 的数字 UID/profile URL，以及 Twitter/X 官方 host 的 exact handle/profile URL。不会对用户提供的任意 URL 发请求。Bilibili search 是可注入的 resolver capability；没有真实 resolver 时返回稳定 `discovery_unavailable`，direct resolve 仍可用。

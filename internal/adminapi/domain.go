@@ -346,6 +346,8 @@ func domainError(err error) (int, string, string) {
 		return http.StatusServiceUnavailable, "discovery_unavailable", "discovery is unavailable; direct resolve remains available"
 	case errors.Is(err, platformdb.ErrDomainUnavailable):
 		return http.StatusServiceUnavailable, "domain_unavailable", "domain service is unavailable"
+	case errors.Is(err, platformdb.ErrLegacyAppliedProjectionDegraded):
+		return http.StatusServiceUnavailable, "legacy_applied_projection_degraded", "Legacy subscription changed; projection reconciliation is degraded"
 	case errors.Is(err, platformdb.ErrProjectionDegraded):
 		return http.StatusServiceUnavailable, "projection_degraded", "Legacy subscription changed; projection reconciliation is degraded"
 	default:
@@ -963,7 +965,7 @@ func (s *Server) createSubscription(w http.ResponseWriter, r *http.Request) {
 			return errorEnvelope(legacyErr)
 		}
 		if projectionErr := s.rebuildProjection(r.Context()); projectionErr != nil {
-			return errorEnvelope(errors.Join(platformdb.ErrProjectionDegraded, projectionErr))
+			return errorEnvelope(errors.Join(platformdb.ErrLegacyAppliedProjectionDegraded, projectionErr))
 		}
 		return http.StatusCreated, apiEnvelope{Data: map[string]any{"status": "active", "source_id": source.ID, "target_id": target.ID, "type": request.Type}}
 	})
@@ -1041,7 +1043,7 @@ func (s *Server) patchSubscription(w http.ResponseWriter, r *http.Request, id st
 			return errorEnvelope(updateErr)
 		}
 		if rebuildErr := s.rebuildProjection(r.Context()); rebuildErr != nil {
-			return errorEnvelope(errors.Join(platformdb.ErrProjectionDegraded, rebuildErr))
+			return errorEnvelope(errors.Join(platformdb.ErrLegacyAppliedProjectionDegraded, rebuildErr))
 		}
 		return http.StatusOK, apiEnvelope{Data: map[string]any{"id": id, "status": "active"}}
 	})
@@ -1076,7 +1078,7 @@ func (s *Server) deleteSubscription(w http.ResponseWriter, r *http.Request, id s
 			return errorEnvelope(removeErr)
 		}
 		if rebuildErr := s.rebuildProjection(r.Context()); rebuildErr != nil {
-			return errorEnvelope(errors.Join(platformdb.ErrProjectionDegraded, rebuildErr))
+			return errorEnvelope(errors.Join(platformdb.ErrLegacyAppliedProjectionDegraded, rebuildErr))
 		}
 		return http.StatusOK, apiEnvelope{Data: map[string]any{"deleted": true, "id": id}}
 	})

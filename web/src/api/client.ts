@@ -71,6 +71,7 @@ export function displayError(error: unknown): string {
     case 'observation_not_found': return 'Observation 已不存在（可能已被保留策略清理）'
     case 'migration_required': return '该 Connector 存在有效订阅，需要迁移后才能切换类型'
     case 'projection_degraded': return 'Legacy 已更新，但 SQLite projection 当前降级，请稍后重建'
+    case 'legacy_applied_projection_degraded': return 'Legacy 已更新，但 SQLite projection 写入失败，请稍后重建'
     case 'source_in_use': return 'Source 仍有订阅，请先解除订阅'
     case 'target_in_use': return 'Target 仍有订阅，请先解除订阅'
     case 'discovery_unavailable': return '搜索暂不可用，但仍可使用 UID / 官方 profile 直接添加'
