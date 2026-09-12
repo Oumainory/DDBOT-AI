@@ -19,13 +19,17 @@ import (
 	"github.com/cnxysoft/DDBOT-WSa/internal/buildinfo"
 	"github.com/cnxysoft/DDBOT-WSa/internal/csrf"
 	"github.com/cnxysoft/DDBOT-WSa/internal/discovery"
+	"github.com/cnxysoft/DDBOT-WSa/internal/evaluation"
 	"github.com/cnxysoft/DDBOT-WSa/internal/idempotency"
 	"github.com/cnxysoft/DDBOT-WSa/internal/migration"
 	"github.com/cnxysoft/DDBOT-WSa/internal/observation"
 	"github.com/cnxysoft/DDBOT-WSa/internal/origin"
 	"github.com/cnxysoft/DDBOT-WSa/internal/pairing"
 	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
+	"github.com/cnxysoft/DDBOT-WSa/internal/provider"
+	"github.com/cnxysoft/DDBOT-WSa/internal/secretstore"
 	"github.com/cnxysoft/DDBOT-WSa/internal/session"
+	"github.com/cnxysoft/DDBOT-WSa/internal/shadow"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/subscription"
 	"go.uber.org/atomic"
 )
@@ -50,6 +54,11 @@ type Config struct {
 	BilibiliResolver      discovery.BilibiliResolver
 	TwitterResolver       discovery.TwitterResolver
 	Now                   func() time.Time
+	AIRepository          *platformdb.AIRepository
+	SecretStore           *secretstore.Service
+	AIProvider            *provider.Swappable
+	ShadowRuntime         *shadow.Runtime
+	EvaluationRunner      *evaluation.Runner
 }
 
 type Server struct {
@@ -72,8 +81,14 @@ type Server struct {
 	pairingVerifier       pairing.Verifier
 	bilibiliResolver      discovery.BilibiliResolver
 	twitterResolver       discovery.TwitterResolver
+	aiRepository          *platformdb.AIRepository
+	secretStore           *secretstore.Service
+	aiProvider            *provider.Swappable
+	shadowRuntime         *shadow.Runtime
+	evaluationRunner      *evaluation.Runner
 	testMu                sync.Mutex
 	testLast              map[string]time.Time
+	aiTestLast            map[string]time.Time
 }
 
 type Principal struct {
@@ -116,6 +131,7 @@ type Overview struct {
 		SQLite      ComponentStatus `json:"sqlite"`
 		SecretStore ComponentStatus `json:"secret_store"`
 		Auth        ComponentStatus `json:"auth"`
+		AI          ComponentStatus `json:"ai"`
 	} `json:"platform"`
 }
 
@@ -207,7 +223,13 @@ func NewServer(config Config) (*Server, error) {
 		pairingVerifier:       config.PairingVerifier,
 		bilibiliResolver:      config.BilibiliResolver,
 		twitterResolver:       config.TwitterResolver,
+		aiRepository:          config.AIRepository,
+		secretStore:           config.SecretStore,
+		aiProvider:            config.AIProvider,
+		shadowRuntime:         config.ShadowRuntime,
+		evaluationRunner:      config.EvaluationRunner,
 		testLast:              make(map[string]time.Time),
+		aiTestLast:            make(map[string]time.Time),
 		authHandler:           authServer.Handler(),
 	}, nil
 }
@@ -252,6 +274,26 @@ func (s *Server) Handler() http.Handler {
 			s.handleBilibiliResolve(w, r)
 		case "/api/v2/discovery/twitter/resolve":
 			s.handleTwitterResolve(w, r)
+		case "/api/v2/ai/provider":
+			s.handleAIProvider(w, r)
+		case "/api/v2/ai/provider/test":
+			s.handleAIProviderTest(w, r)
+		case "/api/v2/ai/releases":
+			s.handleAIReleases(w, r)
+		case "/api/v2/ai/profiles":
+			s.handleAIProfiles(w, r)
+		case "/api/v2/ai/policy/global":
+			s.handleAIPolicy(w, r, "global", "")
+		case "/api/v2/ai/shadow/decisions":
+			s.handleAIDecisions(w, r)
+		case "/api/v2/ai/shadow/summary":
+			s.handleAIShadowSummary(w, r)
+		case "/api/v2/ai/evaluation/cases":
+			s.handleAIEvaluationCases(w, r)
+		case "/api/v2/ai/evaluation/runs":
+			s.handleAIEvaluationRuns(w, r)
+		case "/api/v2/ai/enforce-readiness":
+			s.handleAIEnforceReadiness(w, r)
 		default:
 			if s.handleMigrationSubresource(w, r) {
 				return
@@ -260,6 +302,9 @@ func (s *Server) Handler() http.Handler {
 				return
 			}
 			if s.handleDomainSubresource(w, r) {
+				return
+			}
+			if s.handleAISubresource(w, r) {
 				return
 			}
 			parts := observationPathParts(r.URL.Path)
@@ -370,7 +415,27 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		result.Platform.SecretStore = component(report.Checks["secret_store"])
 		result.Platform.Auth = component(report.Checks["auth"])
 	}
+	result.Platform.AI = s.aiComponentStatus(r.Context())
 	s.writeJSON(w, http.StatusOK, apiEnvelope{Data: result})
+}
+
+func (s *Server) aiComponentStatus(ctx context.Context) ComponentStatus {
+	if s == nil || s.aiRepository == nil {
+		return ComponentStatus{Status: "unavailable", Code: "ai_unavailable"}
+	}
+	if _, err := s.aiRepository.Provider(ctx); err != nil {
+		if errors.Is(err, platformdb.ErrAIProviderNotFound) {
+			return ComponentStatus{Status: "degraded", Code: "ai_provider_unconfigured"}
+		}
+		return ComponentStatus{Status: "degraded", Code: "ai_provider_unavailable"}
+	}
+	if s.shadowRuntime == nil {
+		return ComponentStatus{Status: "degraded", Code: "ai_shadow_disabled"}
+	}
+	if s.aiProvider == nil || s.aiProvider.Get() == nil {
+		return ComponentStatus{Status: "degraded", Code: "ai_provider_unavailable"}
+	}
+	return ComponentStatus{Status: "available", Code: "ai_shadow_ready"}
 }
 
 func (s *Server) handleAbout(w http.ResponseWriter, r *http.Request) {

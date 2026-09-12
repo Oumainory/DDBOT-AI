@@ -32,7 +32,13 @@ type Config struct {
 	PruneInterval     time.Duration
 	PruneInitialDelay time.Duration
 	Log               func(component, class string, count uint64)
+	// RouteHook runs only after a route observation has been durably accepted.
+	// It is an auxiliary Phase 4 seam: implementations must remain bounded and
+	// must never be used to decide whether Legacy sends a message.
+	RouteHook         RouteHook
 }
+
+type RouteHook func(context.Context, platformdb.RouteObservationRecord)
 
 func (c Config) normalized() Config {
 	if c.QueueSize <= 0 {
@@ -108,6 +114,8 @@ type Recorder struct {
 	acceptMu  sync.RWMutex
 	accepting bool
 	closeOnce sync.Once
+	hookMu    sync.RWMutex
+	routeHook RouteHook
 }
 
 func NewRecorder(repository Repository, config Config) *Recorder {
@@ -124,10 +132,23 @@ func NewRecorder(repository Repository, config Config) *Recorder {
 		config:      config,
 		ids:         idGenerator{random: config.Random},
 		accepting:   repository != nil,
+		routeHook:  config.RouteHook,
 	}
 	go recorder.worker()
 	go recorder.retentionLoop()
 	return recorder
+}
+
+// SetRouteHook installs the optional post-persistence observation seam. It is
+// safe to call during platform wiring before Legacy starts accepting events;
+// replacing it never changes the recorder's Legacy-facing behavior.
+func (r *Recorder) SetRouteHook(hook RouteHook) {
+	if r == nil {
+		return
+	}
+	r.hookMu.Lock()
+	r.routeHook = hook
+	r.hookMu.Unlock()
 }
 
 func (r *Recorder) TryObserveEvent(input EventInput) (Trace, bool) {
@@ -350,6 +371,18 @@ func (r *Recorder) process(item queueItem) {
 	if err != nil {
 		count := r.counters.persistenceErrors.Add(1)
 		r.log(item.kind, "persistence_error", count)
+		return
+	}
+	if item.kind == "route" {
+		r.hookMu.RLock()
+		hook := r.routeHook
+		r.hookMu.RUnlock()
+		if hook != nil {
+			// The hook is deliberately invoked after the durable route write. A
+			// panic is contained by the worker guard above and never reaches the
+			// Legacy caller.
+			hook(r.workerCtx, item.route)
+		}
 	}
 }
 

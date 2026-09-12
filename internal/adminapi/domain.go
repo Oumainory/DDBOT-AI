@@ -291,6 +291,13 @@ func readJSONBody(r *http.Request, target any) ([]byte, error) {
 	if err := decoder.Decode(target); err != nil {
 		return nil, err
 	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("trailing json")
+		}
+		return nil, err
+	}
 	return body, nil
 }
 

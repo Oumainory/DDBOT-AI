@@ -24,6 +24,10 @@ var browserRoutes = map[string]struct{}{
 	"/login":        {},
 	"/overview":     {},
 	"/observations": {},
+	"/sources":      {},
+	"/targets":      {},
+	"/connectors":   {},
+	"/ai":            {},
 	"/about":        {},
 }
 

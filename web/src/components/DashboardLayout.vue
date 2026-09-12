@@ -24,6 +24,7 @@ async function logout() {
         <RouterLink :class="['nav-item', { active: current === 'sources' }]" to="/sources">Sources</RouterLink>
         <RouterLink :class="['nav-item', { active: current === 'targets' }]" to="/targets">Targets</RouterLink>
         <RouterLink :class="['nav-item', { active: current === 'connectors' }]" to="/connectors">Connectors</RouterLink>
+        <RouterLink :class="['nav-item', { active: current === 'ai' }]" to="/ai">AI Shadow</RouterLink>
         <RouterLink :class="['nav-item', { active: current === 'about' }]" to="/about">About</RouterLink>
       </nav>
     </aside>

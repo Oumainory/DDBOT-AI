@@ -6,7 +6,7 @@ Phase 0 只固定最容易被错误实现的持久化契约。Core 是 SQLite �
 SQL。已发布的 migration（尤其 `001_core.sql`）是 immutable；后续修正必须新增有序、独立
 checksum 的 migration。
 
-当前 v9 schema 固定 Phase 3B 平台状态：
+当前 v10 schema 固定 Phase 4 AI Shadow 平台状态：
 
 - `idempotency_records` 保存主体、Key、uppercase method、concrete path、canonical query、body SHA-256、command type、显式 execution status、sanitized response、创建/完成/过期时间；原始敏感 request body 永不落库；
 - `delivery_migration_holds` 保存 `migration_held` 重启所需的 delivery/event、独立 route decision identity、route snapshot、logical target 和 message snapshot。
@@ -27,6 +27,14 @@ checksum 的 migration。
   它们都不保存明文 secret，也不是通用 delivery retry queue。
 - v9 仅扩展旁路 `delivery_observations.status`，允许受控迁移期间的
   `migration_held` 结果；它不改变 Legacy 投递或建立通用重试队列。
+- v10 增加 AI Shadow 的 provider 元数据、ClassifierRelease、NormalizedEvent、
+  event-level decision、route evaluation、结构化 Profile/Policy 以及显式 Evaluation
+  case/run/result。API key、prompt、原始 provider response 和完整 prompt 均不落库；
+  `effective_action` 在 Phase 4 强制为 `pass`。NormalizedEvent、AI decision 与 route
+  evaluation 遵守 90 天旁路保留边界，Evaluation dataset 仅显式删除。
+
+Phase 4 的权威 schema 仍是 `internal/platformdb/migrations/010_ai_shadow.sql`，本文件和
+`SQLITE_FOUNDATION.sql` 只是非权威参考；旧 migration 001–009 不得修改。
 
 P1C 的 Master Key 文件格式、AAD、Recovery 与 health/readiness 契约见
 [`docs/phase1/P1C_SECRET_STORE.md`](../phase1/P1C_SECRET_STORE.md)。

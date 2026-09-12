@@ -186,6 +186,12 @@ type observationDetailDTO struct {
 	Event      observationEventDetailDTO `json:"event"`
 	Routes     []routeObservationDTO     `json:"routes"`
 	Deliveries []deliveryObservationDTO  `json:"deliveries"`
+	AI         *observationAIShadowDTO   `json:"ai_shadow,omitempty"`
+}
+
+type observationAIShadowDTO struct {
+	Decisions        []aiDecisionDTO                    `json:"decisions"`
+	RouteEvaluations []platformdb.RouteEvaluationRecord `json:"route_evaluations"`
 }
 
 type observationRuntimeDTO struct {
@@ -365,6 +371,29 @@ func (s *Server) handleObservationEventDetail(w http.ResponseWriter, r *http.Req
 	}
 	for _, delivery := range deliveries {
 		response.Deliveries = append(response.Deliveries, deliveryDTO(delivery))
+	}
+	if s.aiRepository != nil {
+		if decisions, decisionErr := s.aiRepository.DecisionsForEvent(r.Context(), eventID); decisionErr == nil {
+			aiView := &observationAIShadowDTO{Decisions: make([]aiDecisionDTO, 0, len(decisions)), RouteEvaluations: make([]platformdb.RouteEvaluationRecord, 0)}
+			seen := make(map[string]struct{})
+			for _, decision := range decisions {
+				aiView.Decisions = append(aiView.Decisions, aiDecisionDTOFrom(decision))
+				if values, routeErr := s.aiRepository.RouteEvaluationsForDecision(r.Context(), decision.ID); routeErr == nil {
+					for _, value := range values {
+						seen[value.ID] = struct{}{}
+						aiView.RouteEvaluations = append(aiView.RouteEvaluations, value)
+					}
+				}
+			}
+			for _, route := range routes {
+				if value, routeErr := s.aiRepository.RouteEvaluation(r.Context(), route.ID); routeErr == nil {
+					if _, exists := seen[value.ID]; !exists {
+						aiView.RouteEvaluations = append(aiView.RouteEvaluations, value)
+					}
+				}
+			}
+			response.AI = aiView
+		}
 	}
 	s.writeJSON(w, http.StatusOK, apiEnvelope{Data: response})
 }

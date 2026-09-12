@@ -18,15 +18,19 @@ import (
 	"github.com/cnxysoft/DDBOT-WSa/internal/auth"
 	"github.com/cnxysoft/DDBOT-WSa/internal/buildinfo"
 	"github.com/cnxysoft/DDBOT-WSa/internal/domain"
+	"github.com/cnxysoft/DDBOT-WSa/internal/evaluation"
 	"github.com/cnxysoft/DDBOT-WSa/internal/idempotency"
 	"github.com/cnxysoft/DDBOT-WSa/internal/migration"
 	"github.com/cnxysoft/DDBOT-WSa/internal/observation"
 	"github.com/cnxysoft/DDBOT-WSa/internal/origin"
 	"github.com/cnxysoft/DDBOT-WSa/internal/pairing"
 	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
+	"github.com/cnxysoft/DDBOT-WSa/internal/policy"
+	"github.com/cnxysoft/DDBOT-WSa/internal/provider"
 	"github.com/cnxysoft/DDBOT-WSa/internal/runtimeconfig"
 	"github.com/cnxysoft/DDBOT-WSa/internal/secretstore"
 	"github.com/cnxysoft/DDBOT-WSa/internal/session"
+	"github.com/cnxysoft/DDBOT-WSa/internal/shadow"
 	"github.com/cnxysoft/DDBOT-WSa/internal/webui"
 	ddbotlsp "github.com/cnxysoft/DDBOT-WSa/lsp"
 	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
@@ -160,6 +164,7 @@ type Server struct {
 	online              *atomic.Bool
 	httpServer          *http.Server
 	platformStore       *platformdb.Store
+	shadowRuntime       *shadow.Runtime
 	observationRecorder *observation.Recorder
 	restoreObservation  func()
 	legacySubscriptions *subscription.Service
@@ -247,6 +252,7 @@ func start(online *atomic.Bool, alive *atomic.Bool, platform *PlatformConfig) (*
 			return nil, err
 		}
 		s.platformStore = store
+		s.shadowRuntime = platformHTTP.shadowRuntime
 		s.observationRecorder = platformHTTP.observationRecorder
 		s.restoreObservation = platformHTTP.restoreObservation
 		s.legacySubscriptions = platformHTTP.legacySubscriptions
@@ -313,6 +319,9 @@ type platformHTTP struct {
 	handler             http.Handler
 	probe               platformdb.Probe
 	secretStore         *secretstore.Service
+	aiProvider          *provider.Swappable
+	shadowRuntime       *shadow.Runtime
+	evaluationRunner    *evaluation.Runner
 	bootstrap           auth.BootstrapResult
 	bootstrapErr        error
 	observationRecorder *observation.Recorder
@@ -346,6 +355,10 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 	var migrationRepository *platformdb.MigrationRepository
 	var migrationCoordinator *migration.Coordinator
 	var pairingService *pairing.Service
+	var aiRepository *platformdb.AIRepository
+	var aiProvider *provider.Swappable
+	var shadowRuntime *shadow.Runtime
+	var evaluationRunner *evaluation.Runner
 	legacySubscriptions := subscription.NewService()
 	if store != nil {
 		observationRepository = platformdb.NewObservationRepository(store)
@@ -365,6 +378,96 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 			},
 		})
 		probe.SetMigrationRepository(migrationRepository)
+		aiRepository = platformdb.NewAIRepository(store)
+		// The built-in profile is durable metadata, not runtime wiring.  Saving
+		// the same value on startup is idempotent and keeps a fresh instance
+		// immediately usable without introducing a second source of truth.
+		stamp := time.Now().UTC()
+		if err := aiRepository.SaveProfile(context.Background(), policy.OfficialGameProfile(), stamp, stamp); err != nil {
+			logrus.WithError(err).Warn("DDBOT-AI built-in AI profile unavailable")
+		}
+		aiProvider = provider.NewSwappable(nil)
+		// Restore an active provider only when its credential can be resolved.
+		// A missing/unavailable Secret Store leaves Shadow fail-open and does not
+		// prevent Legacy startup.
+		if config, configErr := aiRepository.Provider(context.Background()); configErr == nil && config.Enabled && secretService.State() == secretstore.StateReady && config.CredentialID != "" {
+			if key, keyErr := secretService.ResolveSecret(context.Background(), config.CredentialID); keyErr == nil {
+				client, clientErr := provider.New(provider.Config{BaseURL: config.BaseURL, Model: config.Model, APIKey: string(key), StructuredOutputMode: config.StructuredOutputMode, RequestTimeout: time.Duration(config.RequestTimeoutMS) * time.Millisecond})
+				for i := range key {
+					key[i] = 0
+				}
+				if clientErr == nil {
+					aiProvider.Set(client)
+				}
+			}
+		}
+		shadowRuntime = shadow.New(shadow.Config{Repository: aiRepository, Provider: aiProvider})
+		evaluationRunner = evaluation.New(aiRepository, aiProvider, nil)
+		if evaluationRunner != nil && migrationRepository != nil {
+			// Keep evaluation audit writes on the same platform repository. The
+			// runner receives the authenticated request context, so the principal
+			// can be recorded without ever persisting snapshots or provider data.
+			evaluationRunner.Audit = func(ctx context.Context, action, resourceID, outcome string, metadata map[string]any) {
+				principal, _ := adminapi.PrincipalFromContext(ctx)
+				raw, marshalErr := json.Marshal(metadata)
+				if marshalErr != nil {
+					raw = []byte(`{}`)
+				}
+				_, _ = migrationRepository.AppendAudit(ctx, platformdb.AuditEntry{OccurredAt: time.Now().UTC().Unix(), PrincipalID: principal.AdminID, Action: action, ResourceType: "ai_evaluation_run", ResourceID: resourceID, Outcome: outcome, MetadataJSON: string(raw)})
+			}
+		}
+		// Route observations are the only Legacy-to-AI integration seam. The
+		// recorder invokes this callback after the route row is durable; Shadow
+		// then persists its own normalized snapshot and enqueues work without
+		// entering the Messenger/send path. A missing provider/release remains
+		// a fail-open AI diagnostic condition.
+		if recorder != nil && observationRepository != nil {
+			recorder.SetRouteHook(func(ctx context.Context, route platformdb.RouteObservationRecord) {
+				observed, observedErr := observationRepository.GetObservedEvent(ctx, route.EventID)
+				if observedErr != nil {
+					return
+				}
+				// Resolve the frozen System → Global → Source → Target overlay at
+				// schedule time. Missing sparse rows simply inherit the built-in
+				// profile/default Shadow mode; no resolved copy is written back.
+				modeLayers := []policy.ModeLayer{{Name: "system", Mode: policy.ModeShadow}}
+				baseProfile := policy.OfficialGameProfile()
+				policyLayers := []policy.PolicyLayer{{Name: "system", Profile: &baseProfile}}
+				loadLayer := func(scopeType, scopeID, name string) {
+					if scopeType != "global" && strings.TrimSpace(scopeID) == "" {
+						return
+					}
+					override, policyErr := aiRepository.Policy(ctx, scopeType, scopeID)
+					if policyErr != nil {
+						return
+					}
+					if override.Mode != "" && override.Mode != policy.ModeInherit {
+						modeLayers = append(modeLayers, policy.ModeLayer{Name: name, Mode: override.Mode})
+					}
+					layer := policy.PolicyLayer{Name: name, Threshold: override.Threshold, DefaultAction: override.DefaultAction, CategoryActions: override.CategoryActions, TagActions: override.TagActions}
+					if override.ProfileID != "" {
+						if profile, profileErr := aiRepository.Profile(ctx, override.ProfileID); profileErr == nil {
+							layer.Profile = &profile
+						}
+					}
+					policyLayers = append(policyLayers, layer)
+				}
+				loadLayer("global", "", "global")
+				loadLayer("source", observed.SourceExternalID, "source")
+				loadLayer("target", route.DestinationExternalID, "target")
+				mode := policy.ResolveAIMode(modeLayers...)
+				resolvedPolicy := policy.ResolvePolicyContext(policyLayers...)
+				policyContext := resolvedPolicy
+				// ENFORCE may be representable in old durable rows, but Phase 4
+				// must never activate it. Treat such a stale value as OFF and
+				// preserve the hard fail-open boundary.
+				if mode.Mode == policy.ModeEnforce {
+					mode = policy.ModeResolution{Mode: policy.ModeOff, Provenance: map[string]string{"mode": "enforce_not_available"}}
+				}
+				eligible := strings.EqualFold(route.Outcome, "pass")
+				_ = shadowRuntime.ScheduleObserved(ctx, observed, []shadow.Route{{RouteObservationID: route.ID, Eligible: eligible, Mode: mode, Policy: policyContext}})
+			})
+		}
 	}
 	// The root LSP command handlers and the /api/v2 domain handlers must share
 	// this exact service instance so migration mutation gates cover every
@@ -424,6 +527,11 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 		PairingVerifier:       ddbottelegram.PairingVerifier{},
 		LegacySubscriptions:   legacySubscriptions,
 		Idempotency:           idempotency.NewMemoryStore(idempotency.DefaultRetention),
+		AIRepository:          aiRepository,
+		SecretStore:           secretService,
+		AIProvider:            aiProvider,
+		ShadowRuntime:         shadowRuntime,
+		EvaluationRunner:      evaluationRunner,
 	})
 	if err != nil {
 		if recorder != nil {
@@ -466,6 +574,9 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 		handler:             apiServer.Handler(),
 		probe:               probe,
 		secretStore:         secretService,
+		aiProvider:          aiProvider,
+		shadowRuntime:       shadowRuntime,
+		evaluationRunner:    evaluationRunner,
 		bootstrap:           result,
 		bootstrapErr:        bootstrapErr,
 		observationRecorder: recorder,
@@ -538,6 +649,14 @@ func (s *Server) Close() error {
 	if s.restoreObservation != nil {
 		s.restoreObservation()
 		s.restoreObservation = nil
+	}
+	if s.shadowRuntime != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		if err := s.shadowRuntime.Close(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		cancel()
+		s.shadowRuntime = nil
 	}
 	if s.platformStore != nil {
 		if err := s.platformStore.Close(); err != nil && firstErr == nil {

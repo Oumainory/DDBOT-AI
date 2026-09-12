@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -295,24 +296,44 @@ func (t Target) Validate() error {
 }
 
 type NormalizedEvent struct {
-	ID                string           `json:"id"`
-	Platform          Platform         `json:"platform"`
-	SourceID          string           `json:"source_id"`
-	ExternalID        string           `json:"external_id"`
-	EventType         EventType        `json:"event_type"`
-	Title             string           `json:"title,omitempty"`
-	Body              string           `json:"body,omitempty"`
-	RelatedBody       string           `json:"related_body,omitempty"`
-	URL               string           `json:"url,omitempty"`
-	Media             []MediaReference `json:"media,omitempty"`
-	ReplayPayload     json.RawMessage  `json:"replay_payload"`
-	NormalizerVersion string           `json:"normalizer_version"`
-	CreatedAt         time.Time        `json:"created_at"`
+	// ID is retained for compatibility with the Phase 0 contract. New code
+	// should also populate NormalizedEventID, which is the explicit v1 name.
+	ID                  string           `json:"id"`
+	SchemaVersion       int              `json:"schema_version"`
+	NormalizedEventID   string           `json:"normalized_event_id,omitempty"`
+	ObservedEventID     string           `json:"observed_event_id,omitempty"`
+	Platform            Platform         `json:"platform"`
+	SourceID            string           `json:"source_id"`
+	ExternalID          string           `json:"external_id"`
+	SourceDisplayName   string           `json:"source_display_name,omitempty"`
+	EventType           EventType        `json:"event_type"`
+	AuthorID            string           `json:"author_id,omitempty"`
+	AuthorName          string           `json:"author_name,omitempty"`
+	Title               string           `json:"title,omitempty"`
+	Body                string           `json:"body,omitempty"`
+	RelatedBody         string           `json:"related_body,omitempty"`
+	URL                 string           `json:"url,omitempty"`
+	PublicURLs          []string         `json:"public_urls,omitempty"`
+	Media               []MediaReference `json:"media,omitempty"`
+	SourceEventAt       *time.Time       `json:"source_event_at,omitempty"`
+	ObservedAt          time.Time        `json:"observed_at,omitempty"`
+	ReplayPayload       json.RawMessage  `json:"replay_payload"`
+	NormalizerVersion   string           `json:"normalizer_version"`
+	PreprocessorVersion string           `json:"preprocessor_version,omitempty"`
+	Truncated           bool             `json:"truncated,omitempty"`
+	NormalizationFlags  []string         `json:"normalization_flags,omitempty"`
+	CreatedAt           time.Time        `json:"created_at"`
 }
 
 func (e NormalizedEvent) Validate() error {
-	if strings.TrimSpace(e.ID) == "" {
+	if strings.TrimSpace(e.ID) == "" && strings.TrimSpace(e.NormalizedEventID) == "" {
 		return errors.New("domain: event id is required")
+	}
+	if strings.TrimSpace(e.ID) != "" && strings.TrimSpace(e.NormalizedEventID) != "" && strings.TrimSpace(e.ID) != strings.TrimSpace(e.NormalizedEventID) {
+		return errors.New("domain: normalized event identities disagree")
+	}
+	if e.SchemaVersion != 0 && e.SchemaVersion != 1 {
+		return errors.New("domain: unsupported normalized event schema version")
 	}
 	if e.Platform == "" || e.EventType == "" {
 		return errors.New("domain: event platform and event type are required")
@@ -323,30 +344,38 @@ func (e NormalizedEvent) Validate() error {
 	if len(e.ReplayPayload) == 0 || !json.Valid(e.ReplayPayload) {
 		return errors.New("domain: replay payload must be valid JSON")
 	}
-	if e.CreatedAt.IsZero() {
+	if e.CreatedAt.IsZero() && e.ObservedAt.IsZero() {
 		return errors.New("domain: event created_at is required")
 	}
 	return nil
 }
 
 type SemanticResult struct {
-	Category   Category   `json:"category"`
-	Importance Importance `json:"importance"`
-	Tags       []string   `json:"tags,omitempty"`
-	Flags      []string   `json:"flags,omitempty"`
-	Confidence float64    `json:"confidence"`
-	Uncertain  bool       `json:"uncertain"`
-	Reason     string     `json:"reason,omitempty"`
+	SchemaVersion            int        `json:"schema_version"`
+	Category                 Category   `json:"category"`
+	Importance               Importance `json:"importance"`
+	Tags                     []string   `json:"tags,omitempty"`
+	Flags                    []string   `json:"flags,omitempty"`
+	Confidence               float64    `json:"confidence"`
+	Uncertain                bool       `json:"uncertain"`
+	InsufficientContext      bool       `json:"insufficient_context,omitempty"`
+	PromptInjectionSuspected bool       `json:"prompt_injection_suspected,omitempty"`
+	Summary                  string     `json:"summary,omitempty"`
+	Reason                   string     `json:"reason,omitempty"`
+	ReasonCode               string     `json:"reason_code,omitempty"`
 }
 
 func (r SemanticResult) Validate() error {
+	if r.SchemaVersion != 0 && r.SchemaVersion != 1 {
+		return errors.New("domain: unsupported semantic schema version")
+	}
 	if r.Category == "" || r.Importance == "" {
 		return errors.New("domain: semantic category and importance are required")
 	}
-	if r.Confidence < 0 || r.Confidence > 1 {
+	if math.IsNaN(r.Confidence) || math.IsInf(r.Confidence, 0) || r.Confidence < 0 || r.Confidence > 1 {
 		return fmt.Errorf("domain: confidence %v is outside [0,1]", r.Confidence)
 	}
-	if len([]rune(r.Reason)) > 160 {
+	if len([]rune(r.Reason)) > 160 || len([]rune(r.Summary)) > 240 || len([]rune(r.ReasonCode)) > 64 {
 		return errors.New("domain: semantic reason exceeds 160 characters")
 	}
 	return nil

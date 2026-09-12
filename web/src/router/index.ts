@@ -8,6 +8,7 @@ import ObservationsView from '../views/ObservationsView.vue'
 import SourcesView from '../views/SourcesView.vue'
 import TargetsView from '../views/TargetsView.vue'
 import ConnectorsView from '../views/ConnectorsView.vue'
+import AIView from '../views/AIView.vue'
 
 const router = createRouter({
   history: createWebHistory('/'),
@@ -20,6 +21,7 @@ const router = createRouter({
     { path: '/sources', name: 'sources', component: SourcesView, meta: { requiresAuth: true } },
     { path: '/targets', name: 'targets', component: TargetsView, meta: { requiresAuth: true } },
     { path: '/connectors', name: 'connectors', component: ConnectorsView, meta: { requiresAuth: true } },
+    { path: '/ai', name: 'ai', component: AIView, meta: { requiresAuth: true } },
     { path: '/about', name: 'about', component: AboutView, meta: { requiresAuth: true } },
   ],
 })

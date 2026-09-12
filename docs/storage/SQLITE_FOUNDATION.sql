@@ -1,4 +1,4 @@
--- DDBOT-AI current v9 schema reference (non-authoritative).
+-- DDBOT-AI current v10 schema reference (non-authoritative).
 -- The authoritative, immutable history is internal/platformdb/migrations/*.sql.
 -- The Core will execute these statements on the single SQLite owner
 -- connection with foreign_keys=ON, WAL, and a busy timeout.
@@ -6,6 +6,10 @@
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 PRAGMA busy_timeout = 5000;
+
+-- Phase 4 AI Shadow tables are intentionally not duplicated in this legacy
+-- reference file. The authoritative statements live in
+-- internal/platformdb/migrations/010_ai_shadow.sql; 001-009 remain immutable.
 
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,

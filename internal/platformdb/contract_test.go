@@ -26,8 +26,8 @@ func TestMigrationDefinitionsAreOrderedAndIndependentlyChecksummed(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(definitions) != 9 {
-		t.Fatalf("migration count = %d, want 9", len(definitions))
+	if len(definitions) != 10 {
+		t.Fatalf("migration count = %d, want 10", len(definitions))
 	}
 	if definitions[0].version != 1 || definitions[0].filename != "001_core.sql" || definitions[0].name != "core" {
 		t.Fatalf("v1 definition = %#v", definitions[0])
@@ -82,6 +82,12 @@ func TestMigrationDefinitionsAreOrderedAndIndependentlyChecksummed(t *testing.T)
 	}
 	if definitions[8].checksum != "sha256:8a9e89402297b8a8a46e563e37990394781c1f9ed78ca2590a62f89c79e3ec78" {
 		t.Fatalf("v9 checksum changed: %s", definitions[8].checksum)
+	}
+	if definitions[9].version != 10 || definitions[9].filename != "010_ai_shadow.sql" || definitions[9].name != "ai_shadow" {
+		t.Fatalf("v10 definition = %#v", definitions[9])
+	}
+	if definitions[9].checksum != "sha256:c027f6873d1d3c8e73e824b161d79894b94866df45cabd247794f1c37ab39b78" {
+		t.Fatalf("v10 checksum changed: %s", definitions[9].checksum)
 	}
 	for index, definition := range definitions {
 		if definition.version != index+1 {
@@ -751,7 +757,7 @@ func TestDefaultPreMigrationBackupDestinationIsDeterministic(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	want := databasePath + ".pre-migration-v1-to-v9-20231114T221320.123000000Z.sqlite"
+	want := databasePath + ".pre-migration-v1-to-v10-20231114T221320.123000000Z.sqlite"
 	if backupPath != want {
 		t.Fatalf("default backup path = %q, want %q", backupPath, want)
 	}
@@ -797,7 +803,7 @@ VALUES ('delivery-v8', 'obs-v8', 'route-v8', 'onebot', '123', 'sent', 'sent',
 	if got := store.LastPreMigrationBackupPath(); got != backupPath {
 		t.Fatalf("pre-migration backup path = %q, want %q", got, backupPath)
 	}
-	if version, err := store.SchemaVersion(ctx); err != nil || version != 9 {
+	if version, err := store.SchemaVersion(ctx); err != nil || version != 10 {
 		t.Fatalf("live schema version = %d, err = %v", version, err)
 	}
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO delivery_observations
@@ -825,6 +831,68 @@ VALUES ('delivery-held', 'obs-v8', 'route-v8', 'onebot', '123',
 	defer live.Close()
 	if count := rawInt(t, live, "SELECT COUNT(*) FROM delivery_observations WHERE status = 'migration_held'"); count != 1 {
 		t.Fatalf("live migration_held count = %d, want 1", count)
+	}
+}
+
+func TestV9ToV10CreatesPreMigrationBackupBeforeAIShadowSchema(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	databasePath := filepath.Join(dir, "v9.sqlite")
+	backupPath := filepath.Join(dir, "v9-before-v10.sqlite")
+	createV9Database(t, databasePath)
+	db := openRawDatabase(t, databasePath)
+	mustExec(t, db, `INSERT INTO observed_events
+(id, schema_version, platform, source_kind, source_external_id, upstream_event_id,
+ event_type, observed_at, source_event_at, content_fingerprint,
+ public_snapshot_json, created_at)
+VALUES ('obs-v9', 1, 'twitter', 'account', 'source-v9', 'tweet-v9', 'tweet',
+        1700000000, 1700000000, 'fingerprint-v9', '{"text":"public-v9"}', 1700000000)`)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(ctx, Config{Path: databasePath, Now: func() time.Time { return time.Unix(1700000000, 0).UTC() }, PreMigrationBackup: PreMigrationBackupConfig{Destination: backupPath}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store.LastPreMigrationBackupPath(); got != backupPath {
+		t.Fatalf("pre-migration backup path = %q, want %q", got, backupPath)
+	}
+	if version, err := store.SchemaVersion(ctx); err != nil || version != 10 {
+		t.Fatalf("live schema version = %d, err = %v", version, err)
+	}
+	if !rawTableExists(t, store.db, "ai_provider_configs") || !rawTableExists(t, store.db, "ai_decisions") {
+		_ = store.Close()
+		t.Fatal("live database is missing AI Shadow tables")
+	}
+	var liveText string
+	if err := store.db.QueryRowContext(ctx, "SELECT public_snapshot_json FROM observed_events WHERE id='obs-v9'").Scan(&liveText); err != nil || liveText != `{"text":"public-v9"}` {
+		_ = store.Close()
+		t.Fatalf("live v9 data = %q, err = %v", liveText, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	backup := openRawDatabase(t, backupPath)
+	if version := rawSchemaVersion(t, backup); version != 9 {
+		t.Fatalf("backup schema version = %d, want v9", version)
+	}
+	if rawTableExists(t, backup, "ai_provider_configs") || rawTableExists(t, backup, "ai_decisions") {
+		t.Fatal("pre-migration backup unexpectedly contains v10 AI tables")
+	}
+	var backupText string
+	if err := backup.QueryRowContext(ctx, "SELECT public_snapshot_json FROM observed_events WHERE id='obs-v9'").Scan(&backupText); err != nil || backupText != `{"text":"public-v9"}` {
+		t.Fatalf("backup v9 data = %q, err = %v", backupText, err)
+	}
+	if err := backup.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Open(ctx, Config{Path: databasePath, Now: func() time.Time { return time.Unix(1700000001, 0).UTC() }, PreMigrationBackup: PreMigrationBackupConfig{Destination: backupPath}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if second.LastPreMigrationBackupPath() != "" {
+		t.Fatalf("latest v10 startup repeated backup: %q", second.LastPreMigrationBackupPath())
 	}
 }
 
@@ -930,6 +998,27 @@ func TestMigration006ChecksumMismatchIsRejected(t *testing.T) {
 	opened, err := Open(ctx, Config{Path: databasePath})
 	if opened != nil || !errors.Is(err, ErrMigrationChecksum) {
 		t.Fatalf("Open(v6 checksum mismatch) = store %v, err %v", opened, err)
+	}
+}
+
+func TestMigration010ChecksumMismatchIsRejected(t *testing.T) {
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "latest.sqlite")
+	store, err := Open(ctx, Config{Path: databasePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db := openRawDatabase(t, databasePath)
+	mustExec(t, db, "UPDATE schema_migrations SET checksum = 'sha256:tampered-v10' WHERE version = 10")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := Open(ctx, Config{Path: databasePath})
+	if opened != nil || !errors.Is(err, ErrMigrationChecksum) {
+		t.Fatalf("Open(v10 checksum mismatch) = store %v, err %v", opened, err)
 	}
 }
 
@@ -1250,6 +1339,33 @@ func createV8Database(t *testing.T, path string) {
 		if err := tx.Commit(); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func createV9Database(t *testing.T, path string) {
+	t.Helper()
+	createV8Database(t, path)
+	db := openRawDatabase(t, path)
+	defer db.Close()
+	definitions, err := migrationDefinitions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition := definitions[8]
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(definition.sql); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)", definition.version, definition.name, definition.checksum, 1700000000); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 }
 

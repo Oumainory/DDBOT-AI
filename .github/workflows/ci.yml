@@ -179,7 +179,7 @@ jobs:
           if-no-files-found: ignore
 
   p1e-acceptance:
-    name: Phase 1 final acceptance flow
+    name: Phase 1 and Phase 4 acceptance flow
     needs: [frontend, test, baseline, compatibility-manifest, compatibility-diff]
     runs-on: ubuntu-latest
     steps:
@@ -200,6 +200,7 @@ jobs:
         run: |
           go test -mod=readonly ./internal/p1e -run '^TestPhase1FreshRestartAndRecoveryFlow$' -count=1
           go test -mod=readonly ./internal/adminreset ./internal/auth ./internal/platformdb -count=1
+          go test -mod=readonly ./internal/classifier ./internal/normalizer ./internal/policy ./internal/provider ./internal/shadow ./internal/evaluation ./internal/adminapi -count=1
 
   pure-go-build:
     name: Pure Go build (${{ matrix.goos }}/${{ matrix.goarch }})
@@ -252,7 +253,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           set -euo pipefail
-          for package in secretstore auth adminauth adminapi buildinfo webui session csrf origin observation migration deliverysnapshot pairing audit; do
+          for package in secretstore auth adminauth adminapi buildinfo webui session csrf origin observation migration deliverysnapshot pairing audit classifier normalizer policy provider shadow evaluation; do
             go build -trimpath -buildmode=archive -o "build/${package}-${GOOS}-${GOARCH}.a" "./internal/${package}"
           done
 
