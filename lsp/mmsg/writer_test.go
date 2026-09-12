@@ -1,8 +1,8 @@
 package mmsg
 
 import (
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	"github.com/cnxysoft/DDBOT-WSa/internal/test"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	"github.com/Oumainory/DDBOT-AI/internal/test"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )

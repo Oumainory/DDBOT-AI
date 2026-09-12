@@ -1,9 +1,9 @@
 package lsp
 
 import (
-	"github.com/cnxysoft/DDBOT-WSa/internal/test"
-	localdb "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/version"
+	"github.com/Oumainory/DDBOT-AI/internal/test"
+	localdb "github.com/Oumainory/DDBOT-AI/lsp/buntdb"
+	"github.com/Oumainory/DDBOT-AI/lsp/version"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )

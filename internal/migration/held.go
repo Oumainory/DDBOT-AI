@@ -8,8 +8,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/deliverysnapshot"
-	"github.com/cnxysoft/DDBOT-WSa/internal/domain"
+	"github.com/Oumainory/DDBOT-AI/internal/deliverysnapshot"
+	"github.com/Oumainory/DDBOT-AI/internal/domain"
 )
 
 var (

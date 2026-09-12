@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/Jeffail/gabs/v2"
-	"github.com/cnxysoft/DDBOT-WSa/proxy_pool"
-	"github.com/cnxysoft/DDBOT-WSa/requests"
-	"github.com/cnxysoft/DDBOT-WSa/utils"
+	"github.com/Oumainory/DDBOT-AI/proxy_pool"
+	"github.com/Oumainory/DDBOT-AI/requests"
+	"github.com/Oumainory/DDBOT-AI/utils"
 )
 
 const (

@@ -6,7 +6,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/domain"
+	"github.com/Oumainory/DDBOT-AI/internal/domain"
 )
 
 // ModeInherit is an overlay value. It is intentionally distinct from the

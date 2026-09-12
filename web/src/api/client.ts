@@ -77,6 +77,13 @@ export function displayError(error: unknown): string {
     case 'discovery_unavailable': return '搜索暂不可用，但仍可使用 UID / 官方 profile 直接添加'
     case 'idempotency_conflict': return '请求 Key 已用于另一种请求，请重新生成后重试'
     case 'idempotency_in_progress': return '相同请求正在处理中，请稍后刷新'
+    case 'enforce_not_ready': return 'ENFORCE 尚未满足就绪门槛，当前保持锁定'
+    case 'enforce_readiness_unavailable': return 'ENFORCE 就绪状态暂不可用'
+    case 'enforce_emergency_disabled': return 'ENFORCE 已被紧急开关禁用'
+    case 'replay_expired': return '这条 DROP 的可回放快照已经过期'
+    case 'replay_not_allowed': return '只有持久化的 DROP 决策可以回放'
+    case 'delivery_retry_not_allowed': return '该投递状态不允许人工重试'
+    case 'phase5_unavailable': return 'Phase 5 存储暂不可用'
     case 'invalid_argument': return '筛选参数无效，请检查时间和分页条件'
     default: return error.message || '请求失败'
   }

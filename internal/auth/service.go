@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/csrf"
-	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
-	"github.com/cnxysoft/DDBOT-WSa/internal/session"
+	"github.com/Oumainory/DDBOT-AI/internal/csrf"
+	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
+	"github.com/Oumainory/DDBOT-AI/internal/session"
 )
 
 var (

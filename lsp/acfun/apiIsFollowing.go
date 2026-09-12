@@ -2,8 +2,8 @@ package acfun
 
 import (
 	"bytes"
-	"github.com/cnxysoft/DDBOT-WSa/requests"
-	"github.com/cnxysoft/DDBOT-WSa/utils"
+	"github.com/Oumainory/DDBOT-AI/requests"
+	"github.com/Oumainory/DDBOT-AI/utils"
 	"github.com/guonaihong/gout"
 	"google.golang.org/protobuf/encoding/protojson"
 	"time"

@@ -3,8 +3,8 @@ package lsp
 import (
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/proxy_pool"
-	"github.com/cnxysoft/DDBOT-WSa/requests"
+	"github.com/Oumainory/DDBOT-AI/proxy_pool"
+	"github.com/Oumainory/DDBOT-AI/requests"
 	"github.com/sirupsen/logrus"
 )
 
@@ -29,9 +29,19 @@ func CheckUpdate() string {
 		requests.ProxyOption(proxy_pool.PreferOversea),
 		requests.RetryOption(2),
 	}
+	var httpCode int
+	opts = append(opts, requests.HttpCodeOption(&httpCode))
 	var m map[string]interface{}
-	err := requests.Get("https://api.github.com/repos/cnxysoft/DDBOT-WSa/releases/latest", nil, &m, opts...)
+	err := requests.Get("https://api.github.com/repos/Oumainory/DDBOT-AI/releases/latest", nil, &m, opts...)
 	if err != nil {
+		// A repository without a published release is a completed update check,
+		// not a runtime failure.  This is the expected state before the first
+		// public release candidate and avoids treating the normal 404 response
+		// as a broken Legacy startup path.
+		if httpCode == 404 {
+			logrus.Debug("更新检测完成：当前暂无公开发行版本")
+			return ""
+		}
 		logrus.Errorf("更新检测失败：%v", err)
 		return ""
 	}
@@ -44,7 +54,7 @@ func CheckUpdate() string {
 	latestTagName := m["tag_name"].(string)
 
 	if compareVersion(Tags, latestTagName) {
-		logrus.Infof("更新检测完成：DDBOT有可用更新版本【%v】，请前往 https://github.com/cnxysoft/DDBOT-WSa/releases 查看详细信息", latestTagName)
+		logrus.Infof("更新检测完成：DDBOT有可用更新版本【%v】，请前往 https://github.com/Oumainory/DDBOT-AI/releases 查看详细信息", latestTagName)
 		return latestTagName
 	} else {
 		logrus.Debug("更新检测完成：当前为DDBOT最新版本")

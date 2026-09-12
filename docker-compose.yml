@@ -1,0 +1,18 @@
+services:
+  ddbot-ai:
+    image: ghcr.io/oumainory/ddbot-ai:${DDBOT_AI_VERSION:-v1.0.0-rc1}
+    restart: unless-stopped
+    environment:
+      DDBOT_AI_RUNTIME_MODE: docker
+      DDBOT_AI_HTTP_LISTEN: 0.0.0.0:15631
+      DDBOT_AI_PLATFORM_DB: /data/ddbot-ai.sqlite
+    volumes:
+      - ddbot-ai-data:/data
+    # Keep the service private to the Compose network by default. A reverse
+    # proxy on the same network can use http://ddbot-ai:15631. If host access
+    # is required, publish only the loopback interface:
+    # ports:
+    #   - "127.0.0.1:15631:15631"
+
+volumes:
+  ddbot-ai-data:

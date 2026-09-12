@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern_type"
+	"github.com/Oumainory/DDBOT-AI/lsp/mmsg"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 )

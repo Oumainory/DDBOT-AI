@@ -6,7 +6,7 @@ Phase 0 只固定最容易被错误实现的持久化契约。Core 是 SQLite �
 SQL。已发布的 migration（尤其 `001_core.sql`）是 immutable；后续修正必须新增有序、独立
 checksum 的 migration。
 
-当前 v10 schema 固定 Phase 4 AI Shadow 平台状态：
+当前 v13 schema 固定 Phase 5 ENFORCE、Feedback、Replay 和 Release 平台状态：
 
 - `idempotency_records` 保存主体、Key、uppercase method、concrete path、canonical query、body SHA-256、command type、显式 execution status、sanitized response、创建/完成/过期时间；原始敏感 request body 永不落库；
 - `delivery_migration_holds` 保存 `migration_held` 重启所需的 delivery/event、独立 route decision identity、route snapshot、logical target 和 message snapshot。
@@ -33,8 +33,18 @@ checksum 的 migration。
   `effective_action` 在 Phase 4 强制为 `pass`。NormalizedEvent、AI decision 与 route
   evaluation 遵守 90 天旁路保留边界，Evaluation dataset 仅显式删除。
 
-Phase 4 的权威 schema 仍是 `internal/platformdb/migrations/010_ai_shadow.sql`，本文件和
-`SQLITE_FOUNDATION.sql` 只是非权威参考；旧 migration 001–009 不得修改。
+- v11 增加 `route_decisions`、`enforce_approvals`、`deliveries`、`replayable_events`、
+  `feedback` 和 `retention_metadata`。DROP 只有在 RouteDecision 与 public replay
+  snapshot 同一事务提交后才可抑制 Legacy 发送；`unknown` 是终态，不存在通用 SQLite
+  retry worker。
+- v12 增加有界的 `media_cache_entries` / `media_cache_links` 元数据；媒体字节位于配置
+  cache root，遵守 10 MiB/file、30 MiB/event、2 GiB/global 与 7 天保留。
+- v13 增加 `release_metadata`，用于持久化 ENFORCE emergency kill switch 等发布元数据；
+  它不是密钥或凭据存储。
+
+Phase 5 的权威 schema 是 `internal/platformdb/migrations/001_*.sql` 至当前最新有序
+ migration（目前为 `013_release_metadata.sql`）；本文件和 `SQLITE_FOUNDATION.sql` 只是
+非权威参考。已发布 migration 不得修改；后续变更必须新增 migration。
 
 P1C 的 Master Key 文件格式、AAD、Recovery 与 health/readiness 契约见
 [`docs/phase1/P1C_SECRET_STORE.md`](../phase1/P1C_SECRET_STORE.md)。

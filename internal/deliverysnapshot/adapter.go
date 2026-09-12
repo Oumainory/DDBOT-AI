@@ -15,7 +15,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
+	"github.com/Oumainory/DDBOT-AI/adapter"
 )
 
 var (

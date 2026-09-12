@@ -1,8 +1,8 @@
 package permission
 
 import (
-	"github.com/cnxysoft/DDBOT-WSa/internal/test"
-	localutils "github.com/cnxysoft/DDBOT-WSa/utils"
+	"github.com/Oumainory/DDBOT-AI/internal/test"
+	localutils "github.com/Oumainory/DDBOT-AI/utils"
 	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/andybalholm/brotli"
-	"github.com/cnxysoft/DDBOT-WSa/requests"
+	"github.com/Oumainory/DDBOT-AI/requests"
 	"github.com/guonaihong/gout"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/klauspost/compress/zstd"

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Sora233/MiraiGo-Template/config"
-	"github.com/cnxysoft/DDBOT-WSa/utils/qqlog"
+	"github.com/Oumainory/DDBOT-AI/utils/qqlog"
 	"github.com/sirupsen/logrus"
 	"go.uber.org/atomic"
 	"strconv"

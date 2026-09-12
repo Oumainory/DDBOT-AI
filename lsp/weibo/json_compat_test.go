@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	miraiConfig "github.com/Sora233/MiraiGo-Template/config"
-	"github.com/cnxysoft/DDBOT-WSa/utils/msgstringer"
+	"github.com/Oumainory/DDBOT-AI/utils/msgstringer"
 	"github.com/stretchr/testify/assert"
 )
 

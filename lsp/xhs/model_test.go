@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
-	"github.com/cnxysoft/DDBOT-WSa/utils/msgstringer"
+	"github.com/Oumainory/DDBOT-AI/lsp/mmsg"
+	"github.com/Oumainory/DDBOT-AI/utils/msgstringer"
 )
 
 func TestLiveInfoGetMSGCachesRenderedTemplate(t *testing.T) {

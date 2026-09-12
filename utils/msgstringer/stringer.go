@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
+	"github.com/Oumainory/DDBOT-AI/adapter"
 	"github.com/davecgh/go-spew/spew"
 )
 

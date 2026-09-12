@@ -2,9 +2,9 @@ package test
 
 import (
 	"fmt"
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	localdb "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	localdb "github.com/Oumainory/DDBOT-AI/lsp/buntdb"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern_type"
 	"github.com/stretchr/testify/assert"
 	"net/http/cookiejar"
 	"testing"

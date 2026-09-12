@@ -1,6 +1,6 @@
 package twitter
 
-import "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
+import "github.com/Oumainory/DDBOT-AI/lsp/buntdb"
 
 // 由于ddbot内置的是一个键值型数据库，通常需要使用一个key获取一个value，所以当需要存储数据的时候，需要使用额外的自定义key
 // 可以在这个文件内实现

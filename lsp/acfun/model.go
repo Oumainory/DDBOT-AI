@@ -1,11 +1,11 @@
 package acfun
 
 import (
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/template"
-	localutils "github.com/cnxysoft/DDBOT-WSa/utils"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern_type"
+	"github.com/Oumainory/DDBOT-AI/lsp/mmsg"
+	"github.com/Oumainory/DDBOT-AI/lsp/template"
+	localutils "github.com/Oumainory/DDBOT-AI/utils"
 	"github.com/sirupsen/logrus"
 	"strconv"
 	"sync"

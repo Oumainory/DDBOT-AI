@@ -16,11 +16,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/auth"
-	"github.com/cnxysoft/DDBOT-WSa/internal/csrf"
-	"github.com/cnxysoft/DDBOT-WSa/internal/origin"
-	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
-	"github.com/cnxysoft/DDBOT-WSa/internal/session"
+	"github.com/Oumainory/DDBOT-AI/internal/auth"
+	"github.com/Oumainory/DDBOT-AI/internal/csrf"
+	"github.com/Oumainory/DDBOT-AI/internal/origin"
+	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
+	"github.com/Oumainory/DDBOT-AI/internal/session"
 )
 
 const DefaultMaxBodyBytes int64 = 64 * 1024

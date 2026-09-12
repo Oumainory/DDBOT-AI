@@ -1,4 +1,4 @@
--- DDBOT-AI current v10 schema reference (non-authoritative).
+-- DDBOT-AI current v13 schema reference (non-authoritative).
 -- The authoritative, immutable history is internal/platformdb/migrations/*.sql.
 -- The Core will execute these statements on the single SQLite owner
 -- connection with foreign_keys=ON, WAL, and a busy timeout.
@@ -7,9 +7,10 @@ PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 PRAGMA busy_timeout = 5000;
 
--- Phase 4 AI Shadow tables are intentionally not duplicated in this legacy
--- reference file. The authoritative statements live in
--- internal/platformdb/migrations/010_ai_shadow.sql; 001-009 remain immutable.
+-- Phase 4/5 tables are intentionally not duplicated in this legacy reference
+-- file. The authoritative statements live in internal/platformdb/migrations/
+-- 010_ai_shadow.sql through the latest ordered migration; 001-010 remain
+-- immutable.
 
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
@@ -42,6 +43,11 @@ CREATE INDEX IF NOT EXISTS idx_idempotency_expiry
 
 CREATE INDEX IF NOT EXISTS idx_idempotency_execution_status
     ON idempotency_records (execution_status);
+
+-- Phase 5 authoritative tables are additive and live in migrations 011-013:
+-- route_decisions, enforce_approvals, deliveries, replayable_events, feedback,
+-- retention_metadata, media_cache_entries, media_cache_links and
+-- release_metadata. Do not treat this reference file as a migration source.
 
 -- This is deliberately not a general retry queue. Rows exist only while a
 -- Connector Migration owns the delivery. Every value required after a crash

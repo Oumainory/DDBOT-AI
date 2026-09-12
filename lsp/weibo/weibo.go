@@ -1,8 +1,8 @@
 package weibo
 
 import (
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
-	"github.com/cnxysoft/DDBOT-WSa/requests"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern_type"
+	"github.com/Oumainory/DDBOT-AI/requests"
 	jsoniter "github.com/json-iterator/go"
 	"go.uber.org/atomic"
 	"sync"

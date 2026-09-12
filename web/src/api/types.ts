@@ -297,3 +297,76 @@ export type SubscriptionItem = {
   source?: Source
   target?: Target
 }
+
+export type Phase5Readiness = {
+  current_release_id?: string
+  ready: boolean
+  regression_cases: number
+  important_pass_cases: number
+  known_important_false_drops: number
+  drop_precision: number
+  parse_success: number
+  shadow_decisions: number
+  reviewed_suggested_drop: number
+  unresolved_critical_false_drops: number
+  reasons: string[]
+}
+
+export type Phase5RouteDecision = {
+  id: string
+  event_id: string
+  target_id?: string
+  subscription_id?: string
+  classifier_release_id?: string
+  ai_decision_id?: string
+  configured_mode: string
+  effective_mode: string
+  profile_id?: string
+  policy_digest?: string
+  suggested_action: string
+  effective_action: string
+  reason_code?: string
+  hard_pass_reason?: string
+  enforce_approval_id?: string
+  created_at: string
+  decided_at: string
+}
+
+export type Phase5Delivery = {
+  id: string
+  route_decision_id?: string
+  event_id: string
+  target_id: string
+  connector_id?: string
+  target_type: string
+  external_id: string
+  status: string
+  result_code?: string
+  remote_message_id?: string
+  attempt: number
+  replay_of_route_decision_id?: string
+  initiated_by: string
+  created_at: string
+  sending_at?: string
+  completed_at?: string
+  updated_at: string
+}
+
+export type Phase5Feedback = {
+  id: string
+  route_decision_id: string
+  ai_decision_id?: string
+  feedback_type: string
+  reviewed_by: string
+  notes?: string
+  resolved: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type MediaCacheSummary = {
+  entries: number
+  bytes: number
+  expired: number
+  linked_events: number
+}

@@ -1,7 +1,7 @@
 BUILD_TIME := $(shell date --rfc-3339=seconds)
 COMMIT_ID := $(shell git rev-parse HEAD)
 
-LDFLAGS = -X "github.com/cnxysoft/DDBOT-WSa/lsp.BuildTime='"$(BUILD_TIME)"'" -X "github.com/cnxysoft/DDBOT-WSa/lsp.CommitId='"$(COMMIT_ID)"'" -X "github.com/cnxysoft/DDBOT-WSa/internal/buildinfo.BuildTime='"$(BUILD_TIME)"'" -X "github.com/cnxysoft/DDBOT-WSa/internal/buildinfo.Commit='"$(COMMIT_ID)"'"
+LDFLAGS = -X "github.com/Oumainory/DDBOT-AI/lsp.BuildTime='"$(BUILD_TIME)"'" -X "github.com/Oumainory/DDBOT-AI/lsp.CommitId='"$(COMMIT_ID)"'" -X "github.com/Oumainory/DDBOT-AI/internal/buildinfo.BuildTime='"$(BUILD_TIME)"'" -X "github.com/Oumainory/DDBOT-AI/internal/buildinfo.Commit='"$(COMMIT_ID)"'"
 
 SRC := $(shell find . -type f -name '*.go') lsp/template/default/*
 PROTO := $(shell find . -type f -name '*.proto')
@@ -13,7 +13,7 @@ $(COV): $(SRC)
 
 
 $(TARGET): $(SRC) go.mod go.sum
-	CGO_ENABLED=0 go build -pgo=auto -ldflags '$(LDFLAGS)' -o $(TARGET) github.com/cnxysoft/DDBOT-WSa/cmd
+	CGO_ENABLED=0 go build -pgo=auto -ldflags '$(LDFLAGS)' -o $(TARGET) github.com/Oumainory/DDBOT-AI/cmd
 
 build: $(TARGET)
 

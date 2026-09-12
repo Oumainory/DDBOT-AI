@@ -5,12 +5,12 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	"github.com/cnxysoft/DDBOT-WSa/internal/test"
-	localdb "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/template"
-	"github.com/cnxysoft/DDBOT-WSa/utils/msgstringer"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	"github.com/Oumainory/DDBOT-AI/internal/test"
+	localdb "github.com/Oumainory/DDBOT-AI/lsp/buntdb"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern"
+	"github.com/Oumainory/DDBOT-AI/lsp/template"
+	"github.com/Oumainory/DDBOT-AI/utils/msgstringer"
 	"github.com/stretchr/testify/assert"
 )
 

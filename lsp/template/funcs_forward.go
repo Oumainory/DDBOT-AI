@@ -1,9 +1,9 @@
 package template
 
 import (
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
-	localutils "github.com/cnxysoft/DDBOT-WSa/utils"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	"github.com/Oumainory/DDBOT-AI/lsp/mmsg"
+	localutils "github.com/Oumainory/DDBOT-AI/utils"
 	"strconv"
 	"time"
 )

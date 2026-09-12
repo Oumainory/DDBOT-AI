@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/lsp/xhs/crypto"
-	"github.com/cnxysoft/DDBOT-WSa/requests"
-	"github.com/cnxysoft/DDBOT-WSa/utils"
+	"github.com/Oumainory/DDBOT-AI/lsp/xhs/crypto"
+	"github.com/Oumainory/DDBOT-AI/requests"
+	"github.com/Oumainory/DDBOT-AI/utils"
 	"github.com/guonaihong/gout"
 	"github.com/guonaihong/gout/dataflow"
 	"github.com/sirupsen/logrus"

@@ -9,11 +9,11 @@ import (
 
 	"github.com/Sora233/MiraiGo-Template/config"
 	"github.com/Sora233/MiraiGo-Template/utils"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/cfg"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
-	localutils "github.com/cnxysoft/DDBOT-WSa/utils"
+	"github.com/Oumainory/DDBOT-AI/lsp/cfg"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern_type"
+	"github.com/Oumainory/DDBOT-AI/lsp/mmsg"
+	localutils "github.com/Oumainory/DDBOT-AI/utils"
 )
 
 var logger = utils.GetModuleLogger("twitch-concern")

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cnxysoft/DDBOT-WSa/proxy_pool"
-	"github.com/cnxysoft/DDBOT-WSa/requests"
+	"github.com/Oumainory/DDBOT-AI/proxy_pool"
+	"github.com/Oumainory/DDBOT-AI/requests"
 )
 
 func TestReplaceAvifWithPng(t *testing.T) {

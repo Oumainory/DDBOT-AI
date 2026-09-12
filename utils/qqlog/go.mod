@@ -1,4 +1,4 @@
-module github.com/cnxysoft/DDBOT-WSa/utils/qqlog
+module github.com/Oumainory/DDBOT-AI/utils/qqlog
 
 go 1.24.5
 

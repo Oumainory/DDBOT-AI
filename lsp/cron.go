@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/cnxysoft/DDBOT-WSa/lsp/cfg"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/template"
+	"github.com/Oumainory/DDBOT-AI/lsp/cfg"
+	"github.com/Oumainory/DDBOT-AI/lsp/mmsg"
+	"github.com/Oumainory/DDBOT-AI/lsp/template"
 	"github.com/sirupsen/logrus"
 )
 

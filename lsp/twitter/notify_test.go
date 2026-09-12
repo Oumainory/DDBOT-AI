@@ -3,9 +3,9 @@ package twitter
 import (
 	"testing"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/test"
-	"github.com/cnxysoft/DDBOT-WSa/proxy_pool"
-	"github.com/cnxysoft/DDBOT-WSa/proxy_pool/local_proxy_pool"
+	"github.com/Oumainory/DDBOT-AI/internal/test"
+	"github.com/Oumainory/DDBOT-AI/proxy_pool"
+	"github.com/Oumainory/DDBOT-AI/proxy_pool/local_proxy_pool"
 	"github.com/stretchr/testify/assert"
 )
 

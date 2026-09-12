@@ -14,14 +14,14 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	"github.com/cnxysoft/DDBOT-WSa/internal/deliverysnapshot"
-	"github.com/cnxysoft/DDBOT-WSa/internal/domain"
-	"github.com/cnxysoft/DDBOT-WSa/internal/migration"
-	"github.com/cnxysoft/DDBOT-WSa/internal/observation"
-	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
-	ddbotlsp "github.com/cnxysoft/DDBOT-WSa/lsp"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	"github.com/Oumainory/DDBOT-AI/internal/deliverysnapshot"
+	"github.com/Oumainory/DDBOT-AI/internal/domain"
+	"github.com/Oumainory/DDBOT-AI/internal/migration"
+	"github.com/Oumainory/DDBOT-AI/internal/observation"
+	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
+	ddbotlsp "github.com/Oumainory/DDBOT-AI/lsp"
+	"github.com/Oumainory/DDBOT-AI/lsp/mmsg"
 )
 
 type legacyMigrationHolder struct {

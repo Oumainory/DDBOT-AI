@@ -3,7 +3,7 @@ package utils
 import (
 	"fmt"
 
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
+	"github.com/Oumainory/DDBOT-AI/adapter"
 )
 
 type HackedBot struct {

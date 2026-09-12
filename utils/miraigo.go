@@ -4,7 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
+	"github.com/Oumainory/DDBOT-AI/adapter"
 	"github.com/samber/lo"
 )
 

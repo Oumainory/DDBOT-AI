@@ -9,7 +9,7 @@ import (
 	"time"
 
 	miraiConfig "github.com/Sora233/MiraiGo-Template/config"
-	"github.com/cnxysoft/DDBOT-WSa/internal/test"
+	"github.com/Oumainory/DDBOT-AI/internal/test"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/buntdb"
 )

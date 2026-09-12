@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/proxy_pool"
-	"github.com/cnxysoft/DDBOT-WSa/requests"
+	"github.com/Oumainory/DDBOT-AI/proxy_pool"
+	"github.com/Oumainory/DDBOT-AI/requests"
 )
 
 const PathWebAreaList = "/xlive/web-interface/v1/index/getWebAreaList?source_id=2"

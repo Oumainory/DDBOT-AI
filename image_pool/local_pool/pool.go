@@ -3,8 +3,8 @@ package local_pool
 import (
 	"errors"
 	"github.com/Sora233/MiraiGo-Template/utils"
-	"github.com/cnxysoft/DDBOT-WSa/image_pool"
-	localutils "github.com/cnxysoft/DDBOT-WSa/utils"
+	"github.com/Oumainory/DDBOT-AI/image_pool"
+	localutils "github.com/Oumainory/DDBOT-AI/utils"
 	"io/ioutil"
 	"math/rand"
 	"os"

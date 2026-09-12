@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
+	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
 )
 
 func TestLedgerHashChainDetectsTamper(t *testing.T) {

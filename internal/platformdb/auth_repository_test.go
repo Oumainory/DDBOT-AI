@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/session"
+	"github.com/Oumainory/DDBOT-AI/internal/session"
 )
 
 const testPasswordHash = "$argon2id$v=19$m=65536,t=3,p=2$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"

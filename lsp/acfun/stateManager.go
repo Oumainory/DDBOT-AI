@@ -2,10 +2,10 @@ package acfun
 
 import (
 	"errors"
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	localdb "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
-	localutils "github.com/cnxysoft/DDBOT-WSa/utils"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	localdb "github.com/Oumainory/DDBOT-AI/lsp/buntdb"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern"
+	localutils "github.com/Oumainory/DDBOT-AI/utils"
 	"github.com/tidwall/buntdb"
 	"time"
 )

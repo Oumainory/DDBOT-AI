@@ -1,6 +1,6 @@
 package concern
 
-import "github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
+import "github.com/Oumainory/DDBOT-AI/lsp/concern_type"
 
 type AtSomeone struct {
 	Ctype  concern_type.Type `json:"ctype"`

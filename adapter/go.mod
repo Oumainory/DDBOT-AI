@@ -1,16 +1,16 @@
-module github.com/cnxysoft/DDBOT-WSa/adapter
+module github.com/Oumainory/DDBOT-AI/adapter
 
 go 1.26.2
 
 replace (
 	github.com/Sora233/MiraiGo-Template => ../bot
-	github.com/cnxysoft/DDBOT-WSa/utils => ../utils
-	github.com/cnxysoft/DDBOT-WSa/utils/qqlog => ../utils/qqlog
+	github.com/Oumainory/DDBOT-AI/utils => ../utils
+	github.com/Oumainory/DDBOT-AI/utils/qqlog => ../utils/qqlog
 )
 
 require (
 	github.com/Sora233/MiraiGo-Template v0.0.0-20250614161613-2c6ee7380548
-	github.com/cnxysoft/DDBOT-WSa/utils/qqlog v0.0.0
+	github.com/Oumainory/DDBOT-AI/utils/qqlog v0.0.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/sirupsen/logrus v1.9.4
 	github.com/stretchr/testify v1.11.1

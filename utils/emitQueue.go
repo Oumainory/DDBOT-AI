@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern_type"
 	"go.uber.org/atomic"
 )
 

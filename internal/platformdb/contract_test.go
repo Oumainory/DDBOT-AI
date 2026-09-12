@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,8 +27,8 @@ func TestMigrationDefinitionsAreOrderedAndIndependentlyChecksummed(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(definitions) != 10 {
-		t.Fatalf("migration count = %d, want 10", len(definitions))
+	if len(definitions) < 10 {
+		t.Fatalf("migration count = %d, want at least immutable v1-v10", len(definitions))
 	}
 	if definitions[0].version != 1 || definitions[0].filename != "001_core.sql" || definitions[0].name != "core" {
 		t.Fatalf("v1 definition = %#v", definitions[0])
@@ -757,7 +758,7 @@ func TestDefaultPreMigrationBackupDestinationIsDeterministic(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	want := databasePath + ".pre-migration-v1-to-v10-20231114T221320.123000000Z.sqlite"
+	want := databasePath + fmt.Sprintf(".pre-migration-v1-to-v%d-20231114T221320.123000000Z.sqlite", latestMigrationVersion(t))
 	if backupPath != want {
 		t.Fatalf("default backup path = %q, want %q", backupPath, want)
 	}
@@ -803,7 +804,7 @@ VALUES ('delivery-v8', 'obs-v8', 'route-v8', 'onebot', '123', 'sent', 'sent',
 	if got := store.LastPreMigrationBackupPath(); got != backupPath {
 		t.Fatalf("pre-migration backup path = %q, want %q", got, backupPath)
 	}
-	if version, err := store.SchemaVersion(ctx); err != nil || version != 10 {
+	if version, err := store.SchemaVersion(ctx); err != nil || version != latestMigrationVersion(t) {
 		t.Fatalf("live schema version = %d, err = %v", version, err)
 	}
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO delivery_observations
@@ -857,7 +858,7 @@ VALUES ('obs-v9', 1, 'twitter', 'account', 'source-v9', 'tweet-v9', 'tweet',
 	if got := store.LastPreMigrationBackupPath(); got != backupPath {
 		t.Fatalf("pre-migration backup path = %q, want %q", got, backupPath)
 	}
-	if version, err := store.SchemaVersion(ctx); err != nil || version != 10 {
+	if version, err := store.SchemaVersion(ctx); err != nil || version != latestMigrationVersion(t) {
 		t.Fatalf("live schema version = %d, err = %v", version, err)
 	}
 	if !rawTableExists(t, store.db, "ai_provider_configs") || !rawTableExists(t, store.db, "ai_decisions") {

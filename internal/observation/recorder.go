@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
+	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
 )
 
 // Repository is implemented by platformdb. Keeping this interface here lets
@@ -35,7 +35,7 @@ type Config struct {
 	// RouteHook runs only after a route observation has been durably accepted.
 	// It is an auxiliary Phase 4 seam: implementations must remain bounded and
 	// must never be used to decide whether Legacy sends a message.
-	RouteHook         RouteHook
+	RouteHook RouteHook
 }
 
 type RouteHook func(context.Context, platformdb.RouteObservationRecord)
@@ -132,7 +132,7 @@ func NewRecorder(repository Repository, config Config) *Recorder {
 		config:      config,
 		ids:         idGenerator{random: config.Random},
 		accepting:   repository != nil,
-		routeHook:  config.RouteHook,
+		routeHook:   config.RouteHook,
 	}
 	go recorder.worker()
 	go recorder.retentionLoop()
@@ -197,7 +197,7 @@ func (r *Recorder) TryObserveEvent(input EventInput) (Trace, bool) {
 		return Trace{}, false
 	}
 	r.counters.eventsAccepted.Add(1)
-	return Trace{eventObservationID: id, valid: true}, true
+	return Trace{eventObservationID: id, valid: true, eventSnapshot: record}, true
 }
 
 func cloneEventInput(input EventInput) EventInput {
@@ -239,7 +239,7 @@ func (r *Recorder) TryObserveRoute(trace Trace, input RouteInput) (RouteTrace, b
 		return RouteTrace{}, false
 	}
 	r.counters.routesAccepted.Add(1)
-	return RouteTrace{eventObservationID: trace.eventObservationID, routeObservationID: id, destinationID: input.DestinationExternalID, valid: true}, true
+	return RouteTrace{eventObservationID: trace.eventObservationID, routeObservationID: id, destinationID: input.DestinationExternalID, valid: true, eventSnapshot: trace.eventSnapshot}, true
 }
 
 func (r *Recorder) ObserveDelivery(trace RouteTrace, input DeliveryInput) bool {

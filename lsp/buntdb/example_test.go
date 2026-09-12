@@ -2,7 +2,7 @@ package buntdb_test
 
 import (
 	"fmt"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
+	"github.com/Oumainory/DDBOT-AI/lsp/buntdb"
 	"testing"
 )
 

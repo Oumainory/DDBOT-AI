@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
+	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
 )
 
 type Entry = platformdb.AuditEntry

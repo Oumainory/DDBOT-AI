@@ -1,8 +1,8 @@
 package youtube
 
 import (
-	localdb "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
+	localdb "github.com/Oumainory/DDBOT-AI/lsp/buntdb"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern"
 	"github.com/tidwall/buntdb"
 	"time"
 )

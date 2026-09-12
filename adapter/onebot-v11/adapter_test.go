@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
+	"github.com/Oumainory/DDBOT-AI/adapter"
 	"github.com/stretchr/testify/assert"
 )
 

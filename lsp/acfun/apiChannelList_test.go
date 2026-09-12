@@ -1,7 +1,7 @@
 package acfun
 
 import (
-	localutils "github.com/cnxysoft/DDBOT-WSa/utils"
+	localutils "github.com/Oumainory/DDBOT-AI/utils"
 	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"

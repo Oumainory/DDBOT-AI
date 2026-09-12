@@ -8,14 +8,14 @@ import (
 	"time"
 
 	"github.com/Sora233/MiraiGo-Template/config"
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/template"
-	"github.com/cnxysoft/DDBOT-WSa/proxy_pool"
-	"github.com/cnxysoft/DDBOT-WSa/requests"
-	localutils "github.com/cnxysoft/DDBOT-WSa/utils"
-	"github.com/cnxysoft/DDBOT-WSa/utils/blockCache"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern_type"
+	"github.com/Oumainory/DDBOT-AI/lsp/mmsg"
+	"github.com/Oumainory/DDBOT-AI/lsp/template"
+	"github.com/Oumainory/DDBOT-AI/proxy_pool"
+	"github.com/Oumainory/DDBOT-AI/requests"
+	localutils "github.com/Oumainory/DDBOT-AI/utils"
+	"github.com/Oumainory/DDBOT-AI/utils/blockCache"
 	"github.com/sirupsen/logrus"
 )
 

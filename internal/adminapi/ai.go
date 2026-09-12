@@ -17,13 +17,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/classifier"
-	"github.com/cnxysoft/DDBOT-WSa/internal/domain"
-	"github.com/cnxysoft/DDBOT-WSa/internal/normalizer"
-	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
-	"github.com/cnxysoft/DDBOT-WSa/internal/policy"
-	"github.com/cnxysoft/DDBOT-WSa/internal/provider"
-	"github.com/cnxysoft/DDBOT-WSa/internal/secretstore"
+	"github.com/Oumainory/DDBOT-AI/internal/classifier"
+	"github.com/Oumainory/DDBOT-AI/internal/domain"
+	"github.com/Oumainory/DDBOT-AI/internal/normalizer"
+	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
+	"github.com/Oumainory/DDBOT-AI/internal/policy"
+	"github.com/Oumainory/DDBOT-AI/internal/provider"
+	"github.com/Oumainory/DDBOT-AI/internal/secretstore"
 )
 
 const (
@@ -632,12 +632,25 @@ func (s *Server) saveAIPolicy(w http.ResponseWriter, r *http.Request, scopeType,
 		s.writeError(w, http.StatusBadRequest, "invalid_argument", "policy is invalid")
 		return
 	}
-	if err := policy.ValidatePhase4Mode(request.Mode); err != nil {
-		s.writeJSON(w, http.StatusConflict, apiEnvelope{Error: &apiError{Code: "enforce_not_available", Message: "ENFORCE is not available in Phase 4"}, RequestID: requestID()})
+	if request.Mode == policy.ModeEnforce {
+		// Phase 4 deliberately kept ENFORCE locked.  Once the Phase 5 durable
+		// repository is wired, activation is allowed only through the readiness
+		// and approval gate inside the idempotent command below.
+		if s.phase5Repository == nil {
+			s.writeJSON(w, http.StatusConflict, apiEnvelope{Error: &apiError{Code: "enforce_not_available", Message: "ENFORCE is not available in Phase 4"}, RequestID: requestID()})
+			return
+		}
+	} else if err := policy.ValidatePhase4Mode(request.Mode); err != nil {
+		s.writeJSON(w, http.StatusConflict, apiEnvelope{Error: &apiError{Code: "invalid_argument", Message: "policy mode is invalid"}, RequestID: requestID()})
 		return
 	}
 	s.executeDomainCommand(w, r, "ai_policy_update", body, func() (int, apiEnvelope) {
 		value := platformdb.AIPolicyOverrideRecord{ScopeType: scopeType, ScopeID: scopeID, Mode: request.Mode, ProfileID: request.ProfileID, Threshold: request.Threshold, DefaultAction: request.DefaultAction, CategoryActions: request.CategoryActions, TagActions: request.TagActions, CreatedAt: s.now(), UpdatedAt: s.now()}
+		if value.Mode == policy.ModeEnforce {
+			if err := s.validateEnforcePolicy(r.Context(), value); err != nil {
+				return s.phase5ErrorEnvelope(err)
+			}
+		}
 		if err := s.aiRepository.SavePolicy(r.Context(), value, s.now()); err != nil {
 			return s.aiErrorEnvelope(err)
 		}

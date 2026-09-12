@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/domain"
+	"github.com/Oumainory/DDBOT-AI/internal/domain"
 )
 
 func validClassificationJSON(category string) string {

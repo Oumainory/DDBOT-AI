@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/classifier"
-	"github.com/cnxysoft/DDBOT-WSa/internal/domain"
-	"github.com/cnxysoft/DDBOT-WSa/internal/policy"
+	"github.com/Oumainory/DDBOT-AI/internal/classifier"
+	"github.com/Oumainory/DDBOT-AI/internal/domain"
+	"github.com/Oumainory/DDBOT-AI/internal/policy"
 )
 
 func aiTestEvent() domain.NormalizedEvent {

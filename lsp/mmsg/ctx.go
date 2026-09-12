@@ -1,7 +1,7 @@
 package mmsg
 
 import (
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
+	"github.com/Oumainory/DDBOT-AI/adapter"
 	"github.com/sirupsen/logrus"
 )
 

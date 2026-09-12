@@ -11,28 +11,28 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	"github.com/Oumainory/DDBOT-AI/image_pool"
+	"github.com/Oumainory/DDBOT-AI/image_pool/local_pool"
+	"github.com/Oumainory/DDBOT-AI/image_pool/lolicon_pool"
+	"github.com/Oumainory/DDBOT-AI/internal/observation"
+	localdb "github.com/Oumainory/DDBOT-AI/lsp/buntdb"
+	"github.com/Oumainory/DDBOT-AI/lsp/cfg"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern_type"
+	"github.com/Oumainory/DDBOT-AI/lsp/mmsg"
+	"github.com/Oumainory/DDBOT-AI/lsp/permission"
+	"github.com/Oumainory/DDBOT-AI/lsp/subscription"
+	"github.com/Oumainory/DDBOT-AI/lsp/template"
+	"github.com/Oumainory/DDBOT-AI/lsp/version"
+	"github.com/Oumainory/DDBOT-AI/proxy_pool"
+	"github.com/Oumainory/DDBOT-AI/proxy_pool/local_proxy_pool"
+	"github.com/Oumainory/DDBOT-AI/proxy_pool/py"
+	localutils "github.com/Oumainory/DDBOT-AI/utils"
+	"github.com/Oumainory/DDBOT-AI/utils/msgstringer"
 	"github.com/Sora233/MiraiGo-Template/bot"
 	"github.com/Sora233/MiraiGo-Template/config"
 	"github.com/Sora233/sliceutil"
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	"github.com/cnxysoft/DDBOT-WSa/image_pool"
-	"github.com/cnxysoft/DDBOT-WSa/image_pool/local_pool"
-	"github.com/cnxysoft/DDBOT-WSa/image_pool/lolicon_pool"
-	"github.com/cnxysoft/DDBOT-WSa/internal/observation"
-	localdb "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/cfg"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/permission"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/subscription"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/template"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/version"
-	"github.com/cnxysoft/DDBOT-WSa/proxy_pool"
-	"github.com/cnxysoft/DDBOT-WSa/proxy_pool/local_proxy_pool"
-	"github.com/cnxysoft/DDBOT-WSa/proxy_pool/py"
-	localutils "github.com/cnxysoft/DDBOT-WSa/utils"
-	"github.com/cnxysoft/DDBOT-WSa/utils/msgstringer"
 	"github.com/fsnotify/fsnotify"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/robfig/cron/v3"
@@ -88,6 +88,16 @@ type Lsp struct {
 	// an active connector migration and the Messenger must not be called. The
 	// zero value is deliberately nil so non-migration behavior is unchanged.
 	MigrationHoldHook func(context.Context, *adapter.SendingMessage, mmsg.Target, observation.RouteTrace) (held bool, err error)
+	// EnforceHook is an optional Phase 5 authoritative routing boundary. It is
+	// called only after Legacy deterministic filtering and rendering, and only
+	// a durable DROP may return drop=true. Errors are fail-open: the caller
+	// continues with the historical Messenger send.
+	EnforceHook func(context.Context, *adapter.SendingMessage, mmsg.Target, observation.RouteTrace) (drop bool, reason string, err error)
+	// DeliveryHook mirrors the real Messenger boundary for the Phase 5
+	// delivery ledger. It is invoked with "sending" immediately before the
+	// historical send and with the observed terminal status afterwards. The
+	// callback is auxiliary and panic-contained; nil preserves Legacy behavior.
+	DeliveryHook func(context.Context, mmsg.Target, observation.RouteTrace, string, string, string)
 	// MigrationForwardHoldHook is the equivalent boundary for merge-forward
 	// messages, whose Legacy path uses a separate Messenger method.
 	MigrationForwardHoldHook func(context.Context, int64, []map[string]interface{}, *adapter.ForwardOptions, observation.RouteTrace) (held bool, err error)
@@ -1101,7 +1111,7 @@ func (l *Lsp) NewVersionNotify(newVersionChan <-chan string) {
 			continue
 		}
 		m := mmsg.NewMSG()
-		m.Textf("DDBOT管理员您好，DDBOT有可用更新版本【%v】，请前往 https://github.com/cnxysoft/DDBOT-WSa/releases 查看详细信息\n\n", newVersion)
+		m.Textf("DDBOT管理员您好，DDBOT有可用更新版本【%v】，请前往 https://github.com/Oumainory/DDBOT-AI/releases 查看详细信息\n\n", newVersion)
 		m.Textf("如果您不想接收更新消息，请输入<%v>(不含括号)", l.CommandShowName(NoUpdateCommand))
 		for _, admin := range l.PermissionStateManager.ListAdmin() {
 			if localdb.Exist(localdb.DDBotNoUpdateKey(admin)) {
@@ -1203,9 +1213,11 @@ func (l *Lsp) SendMsgObserved(m *mmsg.MSG, target mmsg.Target, routeTrace observ
 				res = append(res, &adapter.PrivateMessage{ID: int64(msgID), UserID: target.TargetCode()})
 			}
 		case mmsg.TargetGroup:
-			msgID, _, held, err := l.sendGroupForwardMessageObservedResult(target.TargetCode(), forwardNodes, forwardOptions, routeTrace)
+			msgID, _, held, dropped, err := l.sendGroupForwardMessageObservedResult(target.TargetCode(), forwardNodes, forwardOptions, routeTrace)
 			if err != nil {
 				res = append(res, &adapter.GroupMessage{ID: -1})
+			} else if dropped {
+				res = append(res, &adapter.GroupMessage{ID: 0, GroupCode: target.TargetCode(), EnforceDropped: true})
 			} else if held {
 				res = append(res, &adapter.GroupMessage{ID: 0, GroupCode: target.TargetCode(), MigrationHeld: true})
 			} else {
@@ -1336,7 +1348,22 @@ func (l *Lsp) sendGroupMessageObserved(groupCode int64, msg *adapter.SendingMess
 	})
 	if len(msg.Elements) == 0 {
 		logger.WithFields(localutils.GroupLogFields(groupCode)).Debug("send with empty group message")
+		// Keep the durable Phase 5 delivery ledger honest even when the
+		// historical Messenger is intentionally skipped.  There is no
+		// outbound send in this branch, so a terminal skipped_empty result is
+		// the only meaningful delivery observation.
+		if l.DeliveryHook != nil && routeTrace.Valid() {
+			l.callDeliveryHook(context.Background(), mmsg.NewGroupTarget(groupCode), routeTrace, "skipped_empty", "empty_message", "")
+		}
 		return &adapter.GroupMessage{ID: -1, GroupCode: groupCode}
+	}
+	if l.EnforceHook != nil && routeTrace.Valid() {
+		drop, _, hookErr := l.callEnforceHook(context.Background(), msg, mmsg.NewGroupTarget(groupCode), routeTrace)
+		if hookErr == nil && drop {
+			return &adapter.GroupMessage{ID: 0, GroupCode: groupCode, Elements: msg.Elements, EnforceDropped: true}
+		}
+		// A Phase 5 failure is deliberately fail-open. The route remains
+		// observable, and the original rendered message follows Legacy delivery.
 	}
 	if l.MigrationHoldHook != nil {
 		held, holdErr := l.MigrationHoldHook(context.Background(), msg, mmsg.NewGroupTarget(groupCode), routeTrace)
@@ -1351,8 +1378,19 @@ func (l *Lsp) sendGroupMessageObserved(groupCode int64, msg *adapter.SendingMess
 			return &adapter.GroupMessage{ID: 0, GroupCode: groupCode, Elements: msg.Elements, MigrationHeld: true}
 		}
 	}
+	if l.DeliveryHook != nil && routeTrace.Valid() {
+		l.callDeliveryHook(context.Background(), mmsg.NewGroupTarget(groupCode), routeTrace, "sending", "", "")
+	}
 	var newstring = msgstringer.AdapterMsgToString(msg.Elements)
 	ret := bot.Instance.SendGroupMessage(groupCode, msg, newstring)
+	if l.DeliveryHook != nil && routeTrace.Valid() {
+		status, resultCode := observationSendStatus(ret)
+		remoteID := ""
+		if ret.RetMSG != nil && ret.RetMSG.ID >= 0 {
+			remoteID = fmt.Sprintf("%d", ret.RetMSG.ID)
+		}
+		l.callDeliveryHook(context.Background(), mmsg.NewGroupTarget(groupCode), routeTrace, status, resultCode, remoteID)
+	}
 	if routeTrace.Valid() {
 		connector := "legacy"
 		if bot.Instance.Messenger != nil && bot.Instance.Messenger.Adapter != nil {
@@ -1384,7 +1422,35 @@ func (l *Lsp) sendGroupMessageObserved(groupCode int64, msg *adapter.SendingMess
 	return res
 }
 
+func (l *Lsp) callEnforceHook(ctx context.Context, msg *adapter.SendingMessage, target mmsg.Target, trace observation.RouteTrace) (drop bool, reason string, err error) {
+	if l == nil || l.EnforceHook == nil {
+		return false, "", nil
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			drop = false
+			reason = "enforce_hook_panic"
+			err = errors.New("enforce hook panic")
+		}
+	}()
+	return l.EnforceHook(ctx, msg, target, trace)
+}
+
+func (l *Lsp) callDeliveryHook(ctx context.Context, target mmsg.Target, trace observation.RouteTrace, status, resultCode, remoteID string) {
+	if l == nil || l.DeliveryHook == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	l.DeliveryHook(ctx, target, trace, status, resultCode, remoteID)
+}
+
 func observationSendStatus(resp adapter.SendResp) (string, string) {
+	// A nil response message with no explicit queue/error evidence is not a
+	// successful send. Treating it as sent would make the durable delivery
+	// ledger claim a remote outcome that the Messenger never provided.
+	if (resp.RetMSG == nil || resp.RetMSG.ID < 0) && !resp.Queued && resp.Error == nil {
+		return "unknown", "transport_unknown"
+	}
 	switch resp.Status() {
 	case adapter.GroupSendSent:
 		return "sent", "sent"
@@ -1419,25 +1485,54 @@ func (l *Lsp) sendGroupForwardMessage(groupCode int64, nodes []map[string]interf
 }
 
 func (l *Lsp) sendGroupForwardMessageObserved(groupCode int64, nodes []map[string]interface{}, options *adapter.ForwardOptions, routeTrace observation.RouteTrace) (int32, string, error) {
-	messageID, response, _, err := l.sendGroupForwardMessageObservedResult(groupCode, nodes, options, routeTrace)
+	messageID, response, _, _, err := l.sendGroupForwardMessageObservedResult(groupCode, nodes, options, routeTrace)
 	return messageID, response, err
 }
 
-func (l *Lsp) sendGroupForwardMessageObservedResult(groupCode int64, nodes []map[string]interface{}, options *adapter.ForwardOptions, routeTrace observation.RouteTrace) (int32, string, bool, error) {
+func (l *Lsp) sendGroupForwardMessageObservedResult(groupCode int64, nodes []map[string]interface{}, options *adapter.ForwardOptions, routeTrace observation.RouteTrace) (int32, string, bool, bool, error) {
 	if bot.Instance == nil {
-		return -1, "", false, fmt.Errorf("bot not initialized")
+		return -1, "", false, false, fmt.Errorf("bot not initialized")
+	}
+	if len(nodes) == 0 {
+		// A forward with no renderable nodes never crosses the Messenger
+		// boundary.  Keep the Phase 5 ledger explicit about that terminal
+		// outcome while preserving the historical path when the optional hook
+		// is not installed.
+		if l.DeliveryHook != nil && routeTrace.Valid() {
+			l.callDeliveryHook(context.Background(), mmsg.NewGroupTarget(groupCode), routeTrace, "skipped_empty", "empty_forward", "")
+			return -1, "", false, false, nil
+		}
+	}
+	if l.EnforceHook != nil && routeTrace.Valid() {
+		drop, _, hookErr := l.callEnforceHook(context.Background(), &adapter.SendingMessage{}, mmsg.NewGroupTarget(groupCode), routeTrace)
+		if hookErr == nil && drop {
+			return 0, "", false, true, nil
+		}
+		// Hook failures intentionally fall through to the historical Messenger
+		// path (fail-open); the observation/decision layer records the reason.
 	}
 	if l.MigrationForwardHoldHook != nil {
 		held, holdErr := l.MigrationForwardHoldHook(context.Background(), groupCode, nodes, options, routeTrace)
 		if holdErr != nil {
-			return -1, "", false, holdErr
+			return -1, "", false, false, holdErr
 		}
 		if held {
 			observeMigrationHeldDelivery(groupCode, routeTrace)
-			return 0, "", true, nil
+			return 0, "", true, false, nil
 		}
 	}
+	if l.DeliveryHook != nil && routeTrace.Valid() {
+		l.callDeliveryHook(context.Background(), mmsg.NewGroupTarget(groupCode), routeTrace, "sending", "", "")
+	}
 	messageID, response, err := bot.Instance.SendGroupForwardMessage(groupCode, nodes, options)
+	if l.DeliveryHook != nil && routeTrace.Valid() {
+		status, resultCode := observationForwardStatus(err)
+		remoteID := ""
+		if messageID >= 0 {
+			remoteID = fmt.Sprintf("%d", messageID)
+		}
+		l.callDeliveryHook(context.Background(), mmsg.NewGroupTarget(groupCode), routeTrace, status, resultCode, remoteID)
+	}
 	if routeTrace.Valid() {
 		status, resultCode := observationForwardStatus(err)
 		connector := "legacy"
@@ -1451,7 +1546,7 @@ func (l *Lsp) sendGroupForwardMessageObservedResult(groupCode int64, nodes []map
 			ResultCode:            resultCode,
 		})
 	}
-	return messageID, response, false, err
+	return messageID, response, false, false, err
 }
 
 func observationForwardStatus(err error) (string, string) {
@@ -1536,6 +1631,25 @@ func (l *Lsp) SetMigrationHoldHook(handler func(context.Context, *adapter.Sendin
 		return
 	}
 	l.MigrationHoldHook = handler
+}
+
+// SetEnforceHook installs the optional authoritative Phase 5 pre-Messenger
+// decision boundary. Nil clears the hook; the setter performs no I/O and no
+// goroutine work, preserving Legacy behavior when Phase 5 is unavailable.
+func (l *Lsp) SetEnforceHook(handler func(context.Context, *adapter.SendingMessage, mmsg.Target, observation.RouteTrace) (bool, string, error)) {
+	if l == nil {
+		return
+	}
+	l.EnforceHook = handler
+}
+
+// SetDeliveryHook installs the optional durable delivery-ledger bridge. It is
+// a pure callback assignment and never starts work itself.
+func (l *Lsp) SetDeliveryHook(handler func(context.Context, mmsg.Target, observation.RouteTrace, string, string, string)) {
+	if l == nil {
+		return
+	}
+	l.DeliveryHook = handler
 }
 
 // SetMigrationForwardHoldHook installs the corresponding boundary for merge

@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/lsp/cfg"
-	"github.com/cnxysoft/DDBOT-WSa/requests"
+	"github.com/Oumainory/DDBOT-AI/lsp/cfg"
+	"github.com/Oumainory/DDBOT-AI/requests"
 )
 
 // WeiboCookieResponse 定义从 Cookie 刷新 API 返回的响应结构

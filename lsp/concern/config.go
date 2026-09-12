@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/cnxysoft/DDBOT-WSa/utils/msgstringer"
+	"github.com/Oumainory/DDBOT-AI/utils/msgstringer"
 )
 
 // IConfig 定义了Config的通用接口

@@ -1,10 +1,10 @@
 package lsp
 
 import (
-	"github.com/cnxysoft/DDBOT-WSa/internal/test"
-	tc "github.com/cnxysoft/DDBOT-WSa/internal/test_concern"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
+	"github.com/Oumainory/DDBOT-AI/internal/test"
+	tc "github.com/Oumainory/DDBOT-AI/internal/test_concern"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern_type"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )

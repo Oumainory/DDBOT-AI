@@ -1,6 +1,6 @@
 package youtube
 
-import "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
+import "github.com/Oumainory/DDBOT-AI/lsp/buntdb"
 
 type KeySet struct {
 }

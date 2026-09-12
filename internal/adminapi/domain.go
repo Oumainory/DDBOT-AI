@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/discovery"
-	"github.com/cnxysoft/DDBOT-WSa/internal/domain"
-	"github.com/cnxysoft/DDBOT-WSa/internal/idempotency"
-	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/subscription"
+	"github.com/Oumainory/DDBOT-AI/internal/discovery"
+	"github.com/Oumainory/DDBOT-AI/internal/domain"
+	"github.com/Oumainory/DDBOT-AI/internal/idempotency"
+	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
+	"github.com/Oumainory/DDBOT-AI/lsp/subscription"
 )
 
 type sourceDTO struct {

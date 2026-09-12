@@ -11,13 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/auth"
-	"github.com/cnxysoft/DDBOT-WSa/internal/buildinfo"
-	"github.com/cnxysoft/DDBOT-WSa/internal/origin"
-	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
-	"github.com/cnxysoft/DDBOT-WSa/internal/secretstore"
-	"github.com/cnxysoft/DDBOT-WSa/internal/session"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/subscription"
+	"github.com/Oumainory/DDBOT-AI/internal/auth"
+	"github.com/Oumainory/DDBOT-AI/internal/buildinfo"
+	"github.com/Oumainory/DDBOT-AI/internal/origin"
+	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
+	"github.com/Oumainory/DDBOT-AI/internal/secretstore"
+	"github.com/Oumainory/DDBOT-AI/internal/session"
+	"github.com/Oumainory/DDBOT-AI/lsp/subscription"
 )
 
 const apiTestOrigin = "https://admin.example.test"

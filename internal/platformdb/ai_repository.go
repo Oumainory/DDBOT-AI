@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/classifier"
-	"github.com/cnxysoft/DDBOT-WSa/internal/domain"
-	"github.com/cnxysoft/DDBOT-WSa/internal/policy"
+	"github.com/Oumainory/DDBOT-AI/internal/classifier"
+	"github.com/Oumainory/DDBOT-AI/internal/domain"
+	"github.com/Oumainory/DDBOT-AI/internal/policy"
 )
 
 var (
@@ -914,6 +914,7 @@ func (r *AIRepository) ShadowSummary(ctx context.Context) (DecisionSummary, erro
 }
 
 type EnforceReadiness struct {
+	CurrentReleaseID         string   `json:"current_release_id,omitempty"`
 	Ready                    bool     `json:"ready"`
 	RegressionCases          int64    `json:"regression_cases"`
 	ImportantPassCases       int64    `json:"important_pass_cases"`
@@ -934,15 +935,18 @@ func (r *AIRepository) EnforceReadiness(ctx context.Context) (EnforceReadiness, 
 		return EnforceReadiness{}, err
 	}
 	var value EnforceReadiness
+	_ = r.store.db.QueryRowContext(aiContext(ctx), `SELECT COALESCE((SELECT id FROM classifier_releases WHERE active=1 LIMIT 1),'')`).Scan(&value.CurrentReleaseID)
+	var evaluationCriticalFalseDrops int64
 	queries := []struct {
 		query string
 		dest  any
 	}{
 		{`SELECT COUNT(*) FROM ai_evaluation_cases WHERE label_kind='real_reviewed'`, &value.RegressionCases},
-		{`SELECT COUNT(*) FROM ai_evaluation_cases WHERE label_kind='real_reviewed' AND critical=1 AND expected_importance IN ('high','critical') AND expected_action='pass'`, &value.ImportantPassCases},
-		{`SELECT COUNT(*) FROM ai_evaluation_results r JOIN ai_evaluation_cases c ON c.id=r.case_id WHERE c.label_kind='real_reviewed' AND c.critical=1 AND r.expected_action='pass' AND r.suggested_action='drop'`, &value.KnownImportantFalseDrops},
-		{`SELECT COUNT(*) FROM ai_decisions d JOIN classifier_releases cr ON cr.id=d.classifier_release_id WHERE cr.active=1`, &value.ShadowDecisions},
-		{`SELECT COUNT(*) FROM ai_decisions d JOIN classifier_releases cr ON cr.id=d.classifier_release_id WHERE cr.active=1 AND d.suggested_action='drop' AND d.reviewed=1`, &value.ReviewedSuggestedDrop},
+		{`SELECT COUNT(*) FROM ai_evaluation_cases WHERE label_kind='real_reviewed' AND (expected_importance IN ('high','critical') OR critical=1) AND expected_action='pass'`, &value.ImportantPassCases},
+		{`SELECT COUNT(*) FROM ai_evaluation_results r JOIN ai_evaluation_cases c ON c.id=r.case_id WHERE c.label_kind='real_reviewed' AND (c.expected_importance IN ('high','critical') OR c.critical=1) AND r.expected_action='pass' AND r.suggested_action='drop'`, &value.KnownImportantFalseDrops},
+		{`SELECT COUNT(*) FROM ai_evaluation_results r JOIN ai_evaluation_cases c ON c.id=r.case_id WHERE c.label_kind='real_reviewed' AND (c.expected_importance='critical' OR c.critical=1) AND r.expected_action='pass' AND r.suggested_action='drop'`, &evaluationCriticalFalseDrops},
+		{`SELECT COUNT(*) FROM ai_decisions d JOIN classifier_releases cr ON cr.id=d.classifier_release_id WHERE cr.active=1 AND d.mode_at_schedule='shadow'`, &value.ShadowDecisions},
+		{`SELECT COUNT(*) FROM ai_decisions d JOIN classifier_releases cr ON cr.id=d.classifier_release_id WHERE cr.active=1 AND d.mode_at_schedule='shadow' AND d.suggested_action='drop' AND d.reviewed=1`, &value.ReviewedSuggestedDrop},
 	}
 	for _, item := range queries {
 		if err := r.store.db.QueryRowContext(aiContext(ctx), item.query).Scan(item.dest); err != nil {
@@ -957,15 +961,34 @@ func (r *AIRepository) EnforceReadiness(ctx context.Context) (EnforceReadiness, 
 	// administrator has corrected the dataset/policy. Evaluation results do
 	// not carry a separate review bit, so keep the readiness gate conservative:
 	// every known critical false drop remains unresolved.
-	value.UnresolvedCriticalDrops = value.KnownImportantFalseDrops
+	value.UnresolvedCriticalDrops = evaluationCriticalFalseDrops
 	if dropTotal == 0 {
 		value.DropPrecision = 1
 	} else {
 		value.DropPrecision = float64(dropCorrect) / float64(dropTotal)
 	}
 	var total, parsed int64
-	if err := r.store.db.QueryRowContext(aiContext(ctx), `SELECT COUNT(*),COALESCE(SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END),0) FROM ai_decisions`).Scan(&total, &parsed); err != nil {
+	// Parse success is a release-scoped production signal.  Counting an old
+	// release would let a newly activated classifier inherit a historical
+	// success rate and accidentally satisfy the gate before it has evidence.
+	if err := r.store.db.QueryRowContext(aiContext(ctx), `SELECT COUNT(*),COALESCE(SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END),0) FROM ai_decisions WHERE classifier_release_id=?`, value.CurrentReleaseID).Scan(&total, &parsed); err != nil {
 		return EnforceReadiness{}, err
+	}
+	// Feedback is the durable human-review signal for production readiness.
+	// Keep the evaluation-derived metrics above for backward compatibility,
+	// then fold in any route-level labels without allowing synthetic fixtures to
+	// satisfy the gate on their own.
+	var feedbackFalse, feedbackCorrect, feedbackCritical int64
+	if err := r.store.db.QueryRowContext(aiContext(ctx), `SELECT COALESCE(SUM(CASE WHEN f.feedback_type='false_drop' AND json_extract(a.classification_json,'$.importance') IN ('high','critical') THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN f.feedback_type='correct_drop' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN f.feedback_type='false_drop' AND f.resolved=0 AND json_extract(a.classification_json,'$.importance')='critical' THEN 1 ELSE 0 END),0) FROM feedback f JOIN route_decisions rd ON rd.id=f.route_decision_id LEFT JOIN ai_decisions a ON a.id=rd.ai_decision_id`).Scan(&feedbackFalse, &feedbackCorrect, &feedbackCritical); err == nil {
+		value.KnownImportantFalseDrops += feedbackFalse
+		value.UnresolvedCriticalDrops += feedbackCritical
+		if feedbackFalse+feedbackCorrect > 0 {
+			value.DropPrecision = float64(feedbackCorrect) / float64(feedbackFalse+feedbackCorrect)
+		}
+	}
+	var feedbackReviewedDrops int64
+	if err := r.store.db.QueryRowContext(aiContext(ctx), `SELECT COUNT(*) FROM feedback f JOIN route_decisions rd ON rd.id=f.route_decision_id WHERE f.feedback_type IN ('correct_drop','false_drop') AND rd.suggested_action='drop'`).Scan(&feedbackReviewedDrops); err == nil && feedbackReviewedDrops > value.ReviewedSuggestedDrop {
+		value.ReviewedSuggestedDrop = feedbackReviewedDrops
 	}
 	if total > 0 {
 		value.ParseSuccess = float64(parsed) / float64(total)

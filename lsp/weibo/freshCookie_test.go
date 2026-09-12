@@ -3,7 +3,7 @@ package weibo
 import (
 	"testing"
 
-	"github.com/cnxysoft/DDBOT-WSa/requests"
+	"github.com/Oumainory/DDBOT-AI/requests"
 )
 
 // TestFreshCookie tests the FreshCookieGuest function - requires external network access

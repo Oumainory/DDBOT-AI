@@ -5,8 +5,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	"github.com/cnxysoft/DDBOT-WSa/requests"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	"github.com/Oumainory/DDBOT-AI/requests"
 	"github.com/samber/lo"
 )
 

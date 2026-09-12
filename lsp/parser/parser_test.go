@@ -3,9 +3,9 @@ package parser
 import (
 	"testing"
 
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	"github.com/cnxysoft/DDBOT-WSa/internal/test"
-	"github.com/cnxysoft/DDBOT-WSa/utils"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	"github.com/Oumainory/DDBOT-AI/internal/test"
+	"github.com/Oumainory/DDBOT-AI/utils"
 	"github.com/stretchr/testify/assert"
 )
 

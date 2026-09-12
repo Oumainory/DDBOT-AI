@@ -4,9 +4,9 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	"github.com/cnxysoft/DDBOT-WSa/internal/test"
-	localdb "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	"github.com/Oumainory/DDBOT-AI/internal/test"
+	localdb "github.com/Oumainory/DDBOT-AI/lsp/buntdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/tidwall/buntdb"
 )

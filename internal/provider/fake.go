@@ -7,8 +7,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/classifier"
-	"github.com/cnxysoft/DDBOT-WSa/internal/domain"
+	"github.com/Oumainory/DDBOT-AI/internal/classifier"
+	"github.com/Oumainory/DDBOT-AI/internal/domain"
 )
 
 type FakeOpenAICompatibleProvider struct {

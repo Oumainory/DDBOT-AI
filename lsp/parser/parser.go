@@ -4,9 +4,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/cfg"
-	"github.com/cnxysoft/DDBOT-WSa/utils"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	"github.com/Oumainory/DDBOT-AI/lsp/cfg"
+	"github.com/Oumainory/DDBOT-AI/utils"
 )
 
 type Parser struct {

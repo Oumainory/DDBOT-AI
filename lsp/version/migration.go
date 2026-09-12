@@ -3,7 +3,7 @@ package version
 import (
 	"errors"
 	"github.com/Sora233/MiraiGo-Template/utils"
-	localdb "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
+	localdb "github.com/Oumainory/DDBOT-AI/lsp/buntdb"
 )
 
 var logger = utils.GetModuleLogger("ddbot.version")

@@ -1,7 +1,7 @@
 package permission
 
 import (
-	localutils "github.com/cnxysoft/DDBOT-WSa/utils"
+	localutils "github.com/Oumainory/DDBOT-AI/utils"
 	"github.com/sirupsen/logrus"
 )
 

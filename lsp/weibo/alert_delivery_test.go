@@ -7,9 +7,9 @@ import (
 
 	"github.com/Sora233/MiraiGo-Template/bot"
 	"github.com/Sora233/MiraiGo-Template/config"
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	testutil "github.com/cnxysoft/DDBOT-WSa/internal/test"
-	localdb "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	testutil "github.com/Oumainory/DDBOT-AI/internal/test"
+	localdb "github.com/Oumainory/DDBOT-AI/lsp/buntdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

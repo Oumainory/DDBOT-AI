@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
+	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
 )
 
 var (

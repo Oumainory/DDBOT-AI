@@ -6,14 +6,14 @@ DDBOT-AI 是一个面向个人、社群和机器人运营场景的多平台信�
 
 ## 当前状态
 
-仓库已完成并冻结 Phase 0 / Phase 1 / Phase 2 / Phase 3 / Phase 4，冻结点分别为 `phase0-baseline`（`2030834d423e8313df4ae7a937aec0f0badbd443`）、`phase1-baseline`（`6b1d591f388f50a31855a8f93a50c4a344e2b01e`）、`phase2-baseline`（`998388b529b9f9dc472ba29e20bd29a5f63270c1`）、`phase3-baseline`（`ab1ad917022b1c7bdbeae7b52dad44a138c0d721`）和 `phase4-baseline`（在冻结提交上创建）。Phase 5 / ENFORCE 尚未开始：
+仓库已完成并冻结 Phase 0 / Phase 1 / Phase 2 / Phase 3 / Phase 4，冻结点分别为 `phase0-baseline`（`2030834d423e8313df4ae7a937aec0f0badbd443`）、`phase1-baseline`（`6b1d591f388f50a31855a8f93a50c4a344e2b01e`）、`phase2-baseline`（`998388b529b9f9dc472ba29e20bd29a5f63270c1`）、`phase3-baseline`（`ab1ad917022b1c7bdbeae7b52dad44a138c0d721`）和 `phase4-baseline`（`4793ccb8968178400d36b97c4e5f57b25b249030`）。Phase 5 正在实现 ENFORCE、反馈、回放和发布闭环；新能力默认仍保持 fail-open，真实就绪证据不足时 ENFORCE 会保持 LOCKED：
 
 - 已锁定上游基线提交 `a6364e7182ec4eee93dd78e09fe7a7efd92bffab`。
 - 已建立兼容性特征清单，覆盖命令、过滤、模板、OneBot 离线队列、多分片和 Bilibili/Twitter 典型事件。
 - 已建立三目标 `CGO_ENABLED=0` CI 门禁：Linux amd64、Linux arm64、Windows amd64。
 - 已建立事件/分类词表、字段级策略继承、Fail-open 决策和 ClassifierRelease 指纹契约。
 - FFmpeg 统一通过独立可执行文件调用，主程序不链接 FFmpeg 库。
-- Phase 0、Phase 1、Phase 2、Phase 3 和 Phase 4 已标记为 `DONE / FROZEN`；Phase 4 只包含 OFF/SHADOW，ENFORCE 未启用。P2A 写入和 Phase 2 读路径见 [Phase 2 — Observation](./docs/phase2/README.md)、[P2A Passive Observation](./docs/phase2/P2A_PASSIVE_OBSERVATION.md) 和 [Phase 2 Final Acceptance](./docs/phase2/PHASE2_FINAL_ACCEPTANCE.md)；P3A/P3B 见 [Phase 3 — Domain](./docs/phase3/README.md)；Phase 4 见 [Phase 4 — AI Shadow](./docs/phase4/README.md)。
+- Phase 0、Phase 1、Phase 2、Phase 3 和 Phase 4 已标记为 `DONE / FROZEN`；Phase 5 的 ENFORCE 仅在真实 readiness gate、当前 Release 和人工 approval 同时有效时才可产生 DROP。P2A 写入和 Phase 2 读路径见 [Phase 2 — Observation](./docs/phase2/README.md)、[P2A Passive Observation](./docs/phase2/P2A_PASSIVE_OBSERVATION.md) 和 [Phase 2 Final Acceptance](./docs/phase2/PHASE2_FINAL_ACCEPTANCE.md)；P3A/P3B 见 [Phase 3 — Domain](./docs/phase3/README.md)；Phase 4 见 [Phase 4 — AI Shadow](./docs/phase4/README.md)；Phase 5 见 [Phase 5 — Enforce / Replay / Release](./docs/phase5/README.md)。
 
 完整的 Phase 0 实现顺序和验收条件见 [Phase 0 兼容性基线](./compat/README.md)、[V1 不变量](./docs/architecture/V1_INVARIANTS.md) 和 [发行门禁](./docs/architecture/PHASE0_RELEASE_GATES.md)。
 
@@ -28,8 +28,8 @@ DDBOT-AI 是一个面向个人、社群和机器人运营场景的多平台信�
 | Docker 服务/镜像 | `ddbot-ai` |
 | Dashboard | DDBOT-AI |
 
-开发期为了最小化上游改动，Go module 仍暂时使用
-`github.com/cnxysoft/DDBOT-WSa`；正式公开发行前会在最终仓库地址确定后统一迁移 Module、import 和构建元数据。
+Go module、import、构建元数据和 Dashboard 均使用 DDBOT-AI 自有仓库路径
+`github.com/Oumainory/DDBOT-AI`。Legacy 文件名和上游版权归属只在需要兼容或进行来源说明的位置保留。
 
 ## 本地构建
 

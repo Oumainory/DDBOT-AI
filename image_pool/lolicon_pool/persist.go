@@ -1,7 +1,7 @@
 package lolicon_pool
 
 import (
-	localdb "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
+	localdb "github.com/Oumainory/DDBOT-AI/lsp/buntdb"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/tidwall/buntdb"
 )

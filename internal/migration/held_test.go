@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/deliverysnapshot"
+	"github.com/Oumainory/DDBOT-AI/internal/deliverysnapshot"
 )
 
 func heldPayload() deliverysnapshot.Payload {

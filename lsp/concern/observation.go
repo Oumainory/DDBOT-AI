@@ -3,7 +3,7 @@ package concern
 import (
 	"fmt"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/observation"
+	"github.com/Oumainory/DDBOT-AI/internal/observation"
 )
 
 func observationInput(event Event) (input observation.EventInput) {

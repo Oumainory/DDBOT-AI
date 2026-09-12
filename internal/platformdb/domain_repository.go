@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/domain"
+	"github.com/Oumainory/DDBOT-AI/internal/domain"
 )
 
 var (

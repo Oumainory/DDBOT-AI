@@ -3,7 +3,7 @@ package msgstringer
 import (
 	"testing"
 
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
+	"github.com/Oumainory/DDBOT-AI/adapter"
 )
 
 func TestAdapterMsgToString(t *testing.T) {

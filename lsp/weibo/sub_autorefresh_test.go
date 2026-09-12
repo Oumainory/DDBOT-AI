@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	miraiConfig "github.com/Sora233/MiraiGo-Template/config"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/cfg"
+	"github.com/Oumainory/DDBOT-AI/lsp/cfg"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 )

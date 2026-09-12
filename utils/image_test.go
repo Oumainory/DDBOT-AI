@@ -2,7 +2,7 @@ package utils
 
 import (
 	"bytes"
-	"github.com/cnxysoft/DDBOT-WSa/internal/test"
+	"github.com/Oumainory/DDBOT-AI/internal/test"
 	"github.com/stretchr/testify/assert"
 	"image"
 	_ "image/draw"

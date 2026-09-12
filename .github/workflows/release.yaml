@@ -6,13 +6,24 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 env:
   GO_VERSION: '1.26.2'
+  # These repository variables are deliberately required. The workflow must
+  # never silently download an unpinned third-party executable into a release.
+  FFMPEG_VERSION: ${{ vars.FFMPEG_VERSION }}
+  FFMPEG_LICENSE_URL: ${{ vars.FFMPEG_LICENSE_URL }}
+  FFMPEG_URL_LINUX_AMD64: ${{ vars.FFMPEG_URL_LINUX_AMD64 }}
+  FFMPEG_SHA256_LINUX_AMD64: ${{ vars.FFMPEG_SHA256_LINUX_AMD64 }}
+  FFMPEG_URL_LINUX_ARM64: ${{ vars.FFMPEG_URL_LINUX_ARM64 }}
+  FFMPEG_SHA256_LINUX_ARM64: ${{ vars.FFMPEG_SHA256_LINUX_ARM64 }}
+  FFMPEG_URL_WINDOWS_AMD64: ${{ vars.FFMPEG_URL_WINDOWS_AMD64 }}
+  FFMPEG_SHA256_WINDOWS_AMD64: ${{ vars.FFMPEG_SHA256_WINDOWS_AMD64 }}
 
 jobs:
   build:
-    name: Build Lite (${{ matrix.goos }}/${{ matrix.goarch }})
+    name: Build ${{ matrix.flavor }} (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -20,13 +31,27 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
+            flavor: full
           - goos: linux
             goarch: arm64
+            flavor: full
           - goos: windows
             goarch: amd64
+            flavor: full
+          - goos: linux
+            goarch: amd64
+            flavor: lite
+          - goos: linux
+            goarch: arm64
+            flavor: lite
+          - goos: windows
+            goarch: amd64
+            flavor: lite
     steps:
-      - name: Check out
+      - name: Check out release commit
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -34,40 +59,135 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Build with CGO disabled
+      - name: Build archive
         env:
           CGO_ENABLED: '0'
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          FLAVOR: ${{ matrix.flavor }}
+        shell: bash
         run: |
-          mkdir -p dist
+          set -euo pipefail
+          case "$GOOS/$GOARCH" in
+            linux/amd64) ffmpeg_url="$FFMPEG_URL_LINUX_AMD64"; ffmpeg_sha="$FFMPEG_SHA256_LINUX_AMD64" ;;
+            linux/arm64) ffmpeg_url="$FFMPEG_URL_LINUX_ARM64"; ffmpeg_sha="$FFMPEG_SHA256_LINUX_ARM64" ;;
+            windows/amd64) ffmpeg_url="$FFMPEG_URL_WINDOWS_AMD64"; ffmpeg_sha="$FFMPEG_SHA256_WINDOWS_AMD64" ;;
+            *) echo "unsupported release target" >&2; exit 1 ;;
+          esac
+          root="package/ddbot-ai-${RELEASE_TAG}-${GOOS}-${GOARCH}-${FLAVOR}"
+          mkdir -p "$root/bin"
           suffix=""
-          if [ "$GOOS" = "windows" ]; then suffix=".exe"; fi
-          go build -trimpath -ldflags "-s -w -X github.com/cnxysoft/DDBOT-WSa/lsp.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ) -X github.com/cnxysoft/DDBOT-WSa/lsp.CommitId=${GITHUB_SHA}" -o "dist/ddbot-ai${suffix}" ./cmd
-          cd dist
-          zip -q "../ddbot-ai-${GOOS}-${GOARCH}-lite.zip" "ddbot-ai${suffix}"
+          archive_ext="tar.gz"
+          if [ "$GOOS" = "windows" ]; then suffix=".exe"; archive_ext="zip"; fi
+          go build -trimpath -ldflags "-s -w -X github.com/Oumainory/DDBOT-AI/lsp.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ) -X github.com/Oumainory/DDBOT-AI/lsp.CommitId=${GITHUB_SHA} -X github.com/Oumainory/DDBOT-AI/internal/buildinfo.Version=${RELEASE_TAG} -X github.com/Oumainory/DDBOT-AI/internal/buildinfo.Commit=${GITHUB_SHA}" -o "$root/bin/ddbot-ai${suffix}" ./cmd
+          cp README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md "$root/"
+          cat > "$root/BUILD-METADATA.txt" <<EOF
+          product=DDBOT-AI
+          version=${RELEASE_TAG}
+          commit=${GITHUB_SHA}
+          source=https://github.com/Oumainory/DDBOT-AI
+          license=AGPL-3.0
+          flavor=${FLAVOR}
+          EOF
+          if [ "$FLAVOR" = "full" ]; then
+            test -n "$FFMPEG_VERSION" -a -n "$FFMPEG_LICENSE_URL" -a -n "$ffmpeg_url" -a -n "$ffmpeg_sha"
+            tmp="$(mktemp -d)"
+            curl --fail --location --silent --show-error "$ffmpeg_url" -o "$tmp/ffmpeg-download"
+            echo "$ffmpeg_sha  $tmp/ffmpeg-download" | sha256sum -c -
+            mkdir -p "$tmp/unpacked"
+            case "$ffmpeg_url" in
+              *.zip) unzip -q "$tmp/ffmpeg-download" -d "$tmp/unpacked" ;;
+              *.tar.gz|*.tgz) tar -xzf "$tmp/ffmpeg-download" -C "$tmp/unpacked" ;;
+              *) cp "$tmp/ffmpeg-download" "$tmp/unpacked/ffmpeg" ;;
+            esac
+            ffmpeg_path="$(find "$tmp/unpacked" -type f \( -name ffmpeg -o -name ffmpeg.exe \) -print -quit)"
+            test -n "$ffmpeg_path"
+            cp "$ffmpeg_path" "$root/bin/$(basename "$ffmpeg_path")"
+            if [ "$GOOS" != "windows" ]; then chmod 0755 "$root/bin/$(basename "$ffmpeg_path")"; fi
+            cat > "$root/FFMPEG-PROVENANCE.txt" <<EOF
+          version=${FFMPEG_VERSION}
+          source=${ffmpeg_url}
+          sha256=${ffmpeg_sha}
+          license=${FFMPEG_LICENSE_URL}
+          runtime=external-executable
+          EOF
+          else
+            cat > "$root/FFMPEG-PROVENANCE.txt" <<EOF
+          flavor=lite
+          ffmpeg=bundled=false
+          resolution=explicit-config-path-then-PATH
+          EOF
+          fi
+          archive="ddbot-ai-${RELEASE_TAG}-${GOOS}-${GOARCH}-${FLAVOR}.${archive_ext}"
+          if [ "$GOOS" = "windows" ]; then
+            (cd package && zip -qr "../$archive" "$(basename "$root")")
+          else
+            tar -czf "$archive" -C package "$(basename "$root")"
+          fi
 
-      - name: Upload release asset
+      - name: Upload release package
         uses: actions/upload-artifact@v4
         with:
-          name: ddbot-ai-${{ matrix.goos }}-${{ matrix.goarch }}-lite
-          path: ddbot-ai-${{ matrix.goos }}-${{ matrix.goarch }}-lite.zip
+          name: package-${{ matrix.goos }}-${{ matrix.goarch }}-${{ matrix.flavor }}
+          path: ddbot-ai-${{ github.event.release.tag_name }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ matrix.flavor }}.*
+          if-no-files-found: error
+
+  docker-full:
+    name: Build and publish Full Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@v4
+
+      - name: Validate audited FFmpeg pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$FFMPEG_VERSION" -a -n "$FFMPEG_LICENSE_URL" -a -n "$FFMPEG_URL_LINUX_AMD64" -a -n "$FFMPEG_SHA256_LINUX_AMD64"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Full image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/oumainory/ddbot-ai:${{ github.event.release.tag_name }}
+          build-args: |
+            FFMPEG_VERSION=${{ env.FFMPEG_VERSION }}
+            FFMPEG_URL=${{ env.FFMPEG_URL_LINUX_AMD64 }}
+            FFMPEG_SHA256=${{ env.FFMPEG_SHA256_LINUX_AMD64 }}
+            FFMPEG_LICENSE_URL=${{ env.FFMPEG_LICENSE_URL }}
 
   publish:
-    name: Publish release assets
+    name: Publish checksummed archives
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Download release assets
+      - name: Download release packages
         uses: actions/download-artifact@v4
         with:
-          pattern: ddbot-ai-*-lite
+          pattern: package-*
           path: release-assets
           merge-multiple: true
+
+      - name: Create SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum ddbot-ai-* > SHA256SUMS
 
       - name: Publish assets
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.release.tag_name }}
-          files: release-assets/*.zip
+          prerelease: true
+          files: release-assets/*
           generate_release_notes: true

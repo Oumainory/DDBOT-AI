@@ -10,34 +10,38 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	"github.com/Oumainory/DDBOT-AI/internal/adminapi"
+	"github.com/Oumainory/DDBOT-AI/internal/auth"
+	"github.com/Oumainory/DDBOT-AI/internal/buildinfo"
+	"github.com/Oumainory/DDBOT-AI/internal/domain"
+	"github.com/Oumainory/DDBOT-AI/internal/enforce"
+	"github.com/Oumainory/DDBOT-AI/internal/evaluation"
+	"github.com/Oumainory/DDBOT-AI/internal/idempotency"
+	"github.com/Oumainory/DDBOT-AI/internal/mediacache"
+	"github.com/Oumainory/DDBOT-AI/internal/migration"
+	"github.com/Oumainory/DDBOT-AI/internal/observation"
+	"github.com/Oumainory/DDBOT-AI/internal/origin"
+	"github.com/Oumainory/DDBOT-AI/internal/pairing"
+	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
+	"github.com/Oumainory/DDBOT-AI/internal/policy"
+	"github.com/Oumainory/DDBOT-AI/internal/provider"
+	"github.com/Oumainory/DDBOT-AI/internal/replay"
+	"github.com/Oumainory/DDBOT-AI/internal/runtimeconfig"
+	"github.com/Oumainory/DDBOT-AI/internal/secretstore"
+	"github.com/Oumainory/DDBOT-AI/internal/session"
+	"github.com/Oumainory/DDBOT-AI/internal/shadow"
+	"github.com/Oumainory/DDBOT-AI/internal/webui"
+	ddbotlsp "github.com/Oumainory/DDBOT-AI/lsp"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern_type"
+	"github.com/Oumainory/DDBOT-AI/lsp/mmsg"
+	"github.com/Oumainory/DDBOT-AI/lsp/subscription"
+	ddbottelegram "github.com/Oumainory/DDBOT-AI/lsp/telegram"
 	"github.com/Sora233/MiraiGo-Template/config"
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	"github.com/cnxysoft/DDBOT-WSa/internal/adminapi"
-	"github.com/cnxysoft/DDBOT-WSa/internal/auth"
-	"github.com/cnxysoft/DDBOT-WSa/internal/buildinfo"
-	"github.com/cnxysoft/DDBOT-WSa/internal/domain"
-	"github.com/cnxysoft/DDBOT-WSa/internal/evaluation"
-	"github.com/cnxysoft/DDBOT-WSa/internal/idempotency"
-	"github.com/cnxysoft/DDBOT-WSa/internal/migration"
-	"github.com/cnxysoft/DDBOT-WSa/internal/observation"
-	"github.com/cnxysoft/DDBOT-WSa/internal/origin"
-	"github.com/cnxysoft/DDBOT-WSa/internal/pairing"
-	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
-	"github.com/cnxysoft/DDBOT-WSa/internal/policy"
-	"github.com/cnxysoft/DDBOT-WSa/internal/provider"
-	"github.com/cnxysoft/DDBOT-WSa/internal/runtimeconfig"
-	"github.com/cnxysoft/DDBOT-WSa/internal/secretstore"
-	"github.com/cnxysoft/DDBOT-WSa/internal/session"
-	"github.com/cnxysoft/DDBOT-WSa/internal/shadow"
-	"github.com/cnxysoft/DDBOT-WSa/internal/webui"
-	ddbotlsp "github.com/cnxysoft/DDBOT-WSa/lsp"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/subscription"
-	ddbottelegram "github.com/cnxysoft/DDBOT-WSa/lsp/telegram"
 	"github.com/ghodss/yaml"
 	"github.com/sirupsen/logrus"
 	"go.uber.org/atomic"
@@ -78,6 +82,69 @@ func parseIdToString(id interface{}) string {
 	default:
 		return fmt.Sprintf("%v", v)
 	}
+}
+
+// sendReplaySnapshot applies the fixed replay media order at the final
+// Connector boundary. Cache bytes are preferred; a cache miss may fetch only
+// the persisted public URL through the SSRF-bounded media cache. If neither is
+// available, the public URL remains in the text message. No source adapter or
+// private credential is consulted.
+func sendReplaySnapshot(ctx context.Context, identity replay.TargetIdentity, snapshot replay.Snapshot, message []byte, cache *mediacache.Cache) (replay.SendResult, error) {
+	if identity.TargetType != string(domain.TargetGroup) {
+		return replay.SendResult{Status: domain.DeliveryUnknown, ResultCode: "unsupported_target"}, nil
+	}
+	if ddbotlsp.Instance == nil {
+		return replay.SendResult{Status: domain.DeliveryUnknown, ResultCode: "legacy_unavailable"}, nil
+	}
+	groupCode, parseErr := strconv.ParseInt(identity.ExternalID, 10, 64)
+	if parseErr != nil {
+		return replay.SendResult{Status: domain.DeliveryRejected, ResultCode: "invalid_target"}, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	msg := mmsg.NewMSG().Text(string(message))
+	for _, media := range snapshot.Media {
+		candidates := []string{strings.TrimSpace(media.URL), strings.TrimSpace(media.PreviewURL)}
+		attached := false
+		fallback := ""
+		for _, rawURL := range candidates {
+			if rawURL == "" {
+				continue
+			}
+			if fallback == "" {
+				fallback = rawURL
+			}
+			if cache == nil {
+				continue
+			}
+			if _, data, err := cache.ReadReference(ctx, snapshot.EventID, rawURL); err == nil && len(data) != 0 {
+				msg.Image(data, media.AltText)
+				attached = true
+				break
+			}
+			entry, fetchErr := cache.Fetch(ctx, snapshot.RouteDecisionID, snapshot.EventID, rawURL)
+			if fetchErr != nil {
+				continue
+			}
+			if data, readErr := cache.Read(entry); readErr == nil && len(data) != 0 {
+				msg.Image(data, media.AltText)
+				attached = true
+				break
+			}
+		}
+		if !attached && fallback != "" {
+			msg.Text("\n" + fallback)
+		}
+	}
+	values := ddbotlsp.Instance.SendMsg(msg, mmsg.NewGroupTarget(groupCode))
+	if len(values) == 0 {
+		return replay.SendResult{Status: domain.DeliveryUnknown, ResultCode: "legacy_result_unknown"}, nil
+	}
+	if response, ok := values[len(values)-1].(*adapter.GroupMessage); ok && response.ID >= 0 {
+		return replay.SendResult{Status: domain.DeliverySent, RemoteMessageID: strconv.FormatInt(response.ID, 10), ResultCode: "sent"}, nil
+	}
+	return replay.SendResult{Status: domain.DeliveryUnknown, ResultCode: "legacy_result_unknown"}, nil
 }
 
 type RemoveSubRequest struct {
@@ -165,6 +232,8 @@ type Server struct {
 	httpServer          *http.Server
 	platformStore       *platformdb.Store
 	shadowRuntime       *shadow.Runtime
+	enforceRuntime      *enforce.Runtime
+	phase5Repository    *platformdb.Phase5Repository
 	observationRecorder *observation.Recorder
 	restoreObservation  func()
 	legacySubscriptions *subscription.Service
@@ -253,6 +322,8 @@ func start(online *atomic.Bool, alive *atomic.Bool, platform *PlatformConfig) (*
 		}
 		s.platformStore = store
 		s.shadowRuntime = platformHTTP.shadowRuntime
+		s.enforceRuntime = platformHTTP.enforceRuntime
+		s.phase5Repository = platformHTTP.phase5Repository
 		s.observationRecorder = platformHTTP.observationRecorder
 		s.restoreObservation = platformHTTP.restoreObservation
 		s.legacySubscriptions = platformHTTP.legacySubscriptions
@@ -321,6 +392,8 @@ type platformHTTP struct {
 	secretStore         *secretstore.Service
 	aiProvider          *provider.Swappable
 	shadowRuntime       *shadow.Runtime
+	enforceRuntime      *enforce.Runtime
+	phase5Repository    *platformdb.Phase5Repository
 	evaluationRunner    *evaluation.Runner
 	bootstrap           auth.BootstrapResult
 	bootstrapErr        error
@@ -359,6 +432,10 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 	var aiProvider *provider.Swappable
 	var shadowRuntime *shadow.Runtime
 	var evaluationRunner *evaluation.Runner
+	var phase5Repository *platformdb.Phase5Repository
+	var enforceRuntime *enforce.Runtime
+	var replayService *replay.Service
+	var mediaCache *mediacache.Cache
 	legacySubscriptions := subscription.NewService()
 	if store != nil {
 		observationRepository = platformdb.NewObservationRepository(store)
@@ -379,6 +456,16 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 		})
 		probe.SetMigrationRepository(migrationRepository)
 		aiRepository = platformdb.NewAIRepository(store)
+		phase5Repository = platformdb.NewPhase5Repository(store)
+		// A process restart is an explicit delivery boundary.  Any record that
+		// was left in sending is made terminal before new traffic is observed;
+		// this is a warning-only recovery step and never blocks Legacy startup.
+		if abandoned, abandonErr := phase5Repository.MarkSendingAbandonedOnRestart(context.Background(), time.Now().UTC()); abandonErr != nil {
+			logrus.WithError(abandonErr).Warn("DDBOT-AI Phase 5 delivery restart recovery unavailable")
+		} else if abandoned > 0 {
+			logrus.WithField("count", abandoned).Warn("DDBOT-AI marked in-flight deliveries abandoned after restart")
+		}
+		mediaCache = mediacache.New(mediacache.Config{Root: filepath.Join(filepath.Dir(databasePath), "cache", "media"), Repository: phase5Repository})
 		// The built-in profile is durable metadata, not runtime wiring.  Saving
 		// the same value on startup is idempotent and keeps a fresh instance
 		// immediately usable without introducing a second source of truth.
@@ -403,6 +490,98 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 		}
 		shadowRuntime = shadow.New(shadow.Config{Repository: aiRepository, Provider: aiProvider})
 		evaluationRunner = evaluation.New(aiRepository, aiProvider, nil)
+		// Phase 5 authoritative routing is wired as a pre-Messenger hook below.
+		// It remains fail-open whenever the durable repository, provider, release,
+		// readiness evidence, or target identity is unavailable.
+		enforceRuntime = enforce.New(enforce.Config{
+			AIRepository:   aiRepository,
+			Repository:     phase5Repository,
+			Provider:       aiProvider,
+			QueueCapacity:  64,
+			MaxConcurrency: 2,
+			Timeout:        15 * time.Second,
+			CacheMedia: func(ctx context.Context, snapshot replay.Snapshot) error {
+				if mediaCache == nil {
+					return mediacache.ErrCacheUnavailable
+				}
+				var firstErr error
+				for _, media := range snapshot.Media {
+					var mediaErr error
+					for _, rawURL := range []string{media.URL, media.PreviewURL} {
+						if strings.TrimSpace(rawURL) == "" {
+							continue
+						}
+						if _, err := mediaCache.Fetch(ctx, snapshot.RouteDecisionID, snapshot.EventID, rawURL); err != nil {
+							mediaErr = err
+							continue
+						}
+						mediaErr = nil
+						// One successful public URL is enough for a reference. A
+						// preview URL is only attempted when the primary failed.
+						break
+					}
+					if mediaErr != nil && firstErr == nil {
+						firstErr = mediaErr
+					}
+				}
+				return firstErr
+			},
+		})
+		replayService = replay.NewService(replay.Config{
+			Repository:  phase5Repository,
+			Idempotency: idempotency.NewMemoryStore(idempotency.DefaultRetention),
+			ResolveTarget: func(ctx context.Context, identity replay.TargetIdentity) (replay.TargetIdentity, error) {
+				if domainRepository == nil || strings.TrimSpace(identity.TargetID) == "" {
+					return replay.TargetIdentity{}, platformdb.ErrTargetNotFound
+				}
+				value, err := domainRepository.Target(ctx, identity.TargetID)
+				if err != nil || value.TargetType != domain.TargetType(identity.TargetType) || value.ExternalID != identity.ExternalID || value.ConnectorID != identity.ConnectorID || (value.Status != "" && value.Status != domain.TargetResolved) {
+					return replay.TargetIdentity{}, platformdb.ErrTargetNotFound
+				}
+				return replay.TargetIdentity{TargetID: value.ID, TargetType: string(value.TargetType), ExternalID: value.ExternalID, ConnectorID: value.ConnectorID, LegacyRouteKey: value.LegacyRouteKey}, nil
+			},
+			Render: func(_ context.Context, snapshot replay.Snapshot) ([]byte, error) {
+				text := strings.TrimSpace(snapshot.Text)
+				if text == "" {
+					text = strings.TrimSpace(snapshot.Title)
+				}
+				if text == "" {
+					text = strings.TrimSpace(snapshot.PublicURL)
+				}
+				if text == "" {
+					return nil, replay.ErrRendererUnavailable
+				}
+				if snapshot.PublicURL != "" && !strings.Contains(text, snapshot.PublicURL) {
+					text += "\n" + snapshot.PublicURL
+				}
+				return []byte(text), nil
+			},
+			SendSnapshot: func(ctx context.Context, identity replay.TargetIdentity, snapshot replay.Snapshot, message []byte) (replay.SendResult, error) {
+				return sendReplaySnapshot(ctx, identity, snapshot, message, mediaCache)
+			},
+			Send: func(ctx context.Context, identity replay.TargetIdentity, message []byte) (replay.SendResult, error) {
+				if identity.TargetType != string(domain.TargetGroup) {
+					return replay.SendResult{Status: domain.DeliveryUnknown, ResultCode: "unsupported_target"}, nil
+				}
+				if ddbotlsp.Instance == nil {
+					return replay.SendResult{Status: domain.DeliveryUnknown, ResultCode: "legacy_unavailable"}, nil
+				}
+				groupCode, parseErr := strconv.ParseInt(identity.ExternalID, 10, 64)
+				if parseErr != nil {
+					return replay.SendResult{Status: domain.DeliveryRejected, ResultCode: "invalid_target"}, nil
+				}
+				values := ddbotlsp.Instance.SendMsg(mmsg.NewMSG().Text(string(message)), mmsg.NewGroupTarget(groupCode))
+				if len(values) == 0 {
+					return replay.SendResult{Status: domain.DeliveryUnknown, ResultCode: "legacy_result_unknown"}, nil
+				}
+				if response, ok := values[len(values)-1].(*adapter.GroupMessage); ok {
+					if response.ID >= 0 {
+						return replay.SendResult{Status: domain.DeliverySent, RemoteMessageID: strconv.FormatInt(response.ID, 10), ResultCode: "sent"}, nil
+					}
+				}
+				return replay.SendResult{Status: domain.DeliveryUnknown, ResultCode: "legacy_result_unknown"}, nil
+			},
+		})
 		if evaluationRunner != nil && migrationRepository != nil {
 			// Keep evaluation audit writes on the same platform repository. The
 			// runner receives the authenticated request context, so the principal
@@ -422,6 +601,72 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 		// entering the Messenger/send path. A missing provider/release remains
 		// a fail-open AI diagnostic condition.
 		if recorder != nil && observationRepository != nil {
+			if enforceRuntime != nil {
+				ddbotlsp.Instance.SetEnforceHook(func(ctx context.Context, msg *adapter.SendingMessage, target mmsg.Target, trace observation.RouteTrace) (bool, string, error) {
+					return evaluateEnforceRoute(ctx, msg, target, trace, observationRepository, domainRepository, aiRepository, enforceRuntime)
+				})
+			}
+			if phase5Repository != nil {
+				var deliveryMu sync.Mutex
+				// A single route observation can fan out into multiple Messenger
+				// calls (for example, a segmented message) and those calls may
+				// overlap when different delivery paths run concurrently. Keep an
+				// ordered durable id queue per route instead of one mutable slot;
+				// otherwise a later "sending" hook would orphan the earlier row in
+				// the sending state forever.
+				activeDeliveries := make(map[string][]string)
+				ddbotlsp.Instance.SetDeliveryHook(func(ctx context.Context, target mmsg.Target, trace observation.RouteTrace, status, resultCode, remoteID string) {
+					if !trace.Valid() || target == nil || !target.TargetType().IsGroup() {
+						return
+					}
+					key := trace.RouteObservationID()
+					externalID := strconv.FormatInt(target.TargetCode(), 10)
+					targetID := "legacy:group:" + externalID
+					connectorID := ""
+					if domainRepository != nil {
+						if resolved, ok := targetForLegacyGroup(ctx, domainRepository, externalID); ok {
+							targetID, connectorID = resolved.ID, resolved.ConnectorID
+						}
+					}
+					deliveryMu.Lock()
+					defer deliveryMu.Unlock()
+					if status == "sending" {
+						stamp := time.Now().UTC()
+						value, createErr := phase5Repository.CreateDeliveryRecord(ctx, platformdb.DeliveryRecord{EventID: trace.EventObservationID(), TargetID: targetID, ConnectorID: connectorID, TargetType: "group", ExternalID: externalID, Status: domain.DeliveryPlanned, InitiatedBy: "system", CreatedAt: stamp, UpdatedAt: stamp})
+						if createErr == nil {
+							// Keep the durable lifecycle explicit: planned is committed
+							// before entering the Messenger call, then atomically move
+							// into sending at the hook boundary.
+							if transitionErr := phase5Repository.TransitionDelivery(ctx, value.ID, domain.DeliverySending, "", "", stamp); transitionErr == nil {
+								activeDeliveries[key] = append(activeDeliveries[key], value.ID)
+							}
+						}
+						return
+					}
+					if status == string(domain.DeliverySkippedEmpty) {
+						// Empty rendered messages never enter the Messenger boundary,
+						// so create and complete a terminal ledger row directly.
+						// This preserves the explicit skipped_empty outcome without
+						// pretending that a remote send occurred.
+						stamp := time.Now().UTC()
+						value, createErr := phase5Repository.CreateDeliveryRecord(ctx, platformdb.DeliveryRecord{EventID: trace.EventObservationID(), TargetID: targetID, ConnectorID: connectorID, TargetType: "group", ExternalID: externalID, Status: domain.DeliveryPlanned, ResultCode: resultCode, InitiatedBy: "system", CreatedAt: stamp, UpdatedAt: stamp})
+						if createErr == nil {
+							_ = phase5Repository.TransitionDelivery(ctx, value.ID, domain.DeliverySkippedEmpty, resultCode, remoteID, stamp)
+						}
+						return
+					}
+					ids := activeDeliveries[key]
+					if len(ids) > 0 {
+						id := ids[0]
+						if len(ids) == 1 {
+							delete(activeDeliveries, key)
+						} else {
+							activeDeliveries[key] = ids[1:]
+						}
+						_ = phase5Repository.TransitionDelivery(ctx, id, domain.DeliveryStatus(status), resultCode, remoteID, time.Now().UTC())
+					}
+				})
+			}
 			recorder.SetRouteHook(func(ctx context.Context, route platformdb.RouteObservationRecord) {
 				observed, observedErr := observationRepository.GetObservedEvent(ctx, route.EventID)
 				if observedErr != nil {
@@ -458,16 +703,18 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 				mode := policy.ResolveAIMode(modeLayers...)
 				resolvedPolicy := policy.ResolvePolicyContext(policyLayers...)
 				policyContext := resolvedPolicy
-				// ENFORCE may be representable in old durable rows, but Phase 4
-				// must never activate it. Treat such a stale value as OFF and
-				// preserve the hard fail-open boundary.
-				if mode.Mode == policy.ModeEnforce {
-					mode = policy.ModeResolution{Mode: policy.ModeOff, Provenance: map[string]string{"mode": "enforce_not_available"}}
-				}
 				eligible := strings.EqualFold(route.Outcome, "pass")
-				_ = shadowRuntime.ScheduleObserved(ctx, observed, []shadow.Route{{RouteObservationID: route.ID, Eligible: eligible, Mode: mode, Policy: policyContext}})
+				// ENFORCE is evaluated synchronously by the pre-Messenger hook. Do
+				// not also schedule a Shadow call for that route, otherwise one
+				// event/release could trigger two provider requests.
+				if mode.Mode != policy.ModeEnforce {
+					_ = shadowRuntime.ScheduleObserved(ctx, observed, []shadow.Route{{RouteObservationID: route.ID, Eligible: eligible, Mode: mode, Policy: policyContext}})
+				}
 			})
 		}
+	} else {
+		ddbotlsp.Instance.SetEnforceHook(nil)
+		ddbotlsp.Instance.SetDeliveryHook(nil)
 	}
 	// The root LSP command handlers and the /api/v2 domain handlers must share
 	// this exact service instance so migration mutation gates cover every
@@ -532,6 +779,10 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 		AIProvider:            aiProvider,
 		ShadowRuntime:         shadowRuntime,
 		EvaluationRunner:      evaluationRunner,
+		Phase5Repository:      phase5Repository,
+		EnforceRuntime:        enforceRuntime,
+		ReplayService:         replayService,
+		MediaCache:            mediaCache,
 	})
 	if err != nil {
 		if recorder != nil {
@@ -576,6 +827,8 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 		secretStore:         secretService,
 		aiProvider:          aiProvider,
 		shadowRuntime:       shadowRuntime,
+		enforceRuntime:      enforceRuntime,
+		phase5Repository:    phase5Repository,
 		evaluationRunner:    evaluationRunner,
 		bootstrap:           result,
 		bootstrapErr:        bootstrapErr,
@@ -633,6 +886,8 @@ func (s *Server) Close() error {
 	// later Legacy send cannot retain a pointer to a closed platform store.
 	ddbotlsp.Instance.SetMigrationHoldHook(nil)
 	ddbotlsp.Instance.SetMigrationForwardHoldHook(nil)
+	ddbotlsp.Instance.SetEnforceHook(nil)
+	ddbotlsp.Instance.SetDeliveryHook(nil)
 	ddbotlsp.Instance.SetTelegramBindHandler(nil)
 	if s.httpServer != nil {
 		if err := s.httpServer.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -657,6 +912,10 @@ func (s *Server) Close() error {
 		}
 		cancel()
 		s.shadowRuntime = nil
+	}
+	if s.enforceRuntime != nil {
+		s.enforceRuntime.Close()
+		s.enforceRuntime = nil
 	}
 	if s.platformStore != nil {
 		if err := s.platformStore.Close(); err != nil && firstErr == nil {

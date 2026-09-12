@@ -8,26 +8,26 @@ import (
 
 	"github.com/Sora233/MiraiGo-Template/config"
 	"github.com/alecthomas/kong"
-	"github.com/cnxysoft/DDBOT-WSa"
-	"github.com/cnxysoft/DDBOT-WSa/internal/adminreset"
-	"github.com/cnxysoft/DDBOT-WSa/internal/auth"
-	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
-	_ "github.com/cnxysoft/DDBOT-WSa/logging"
-	"github.com/cnxysoft/DDBOT-WSa/lsp"
-	_ "github.com/cnxysoft/DDBOT-WSa/lsp/acfun"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/bilibili"
-	localdb "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
-	_ "github.com/cnxysoft/DDBOT-WSa/lsp/douyin"
-	_ "github.com/cnxysoft/DDBOT-WSa/lsp/douyu"
-	_ "github.com/cnxysoft/DDBOT-WSa/lsp/huya"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/permission"
-	_ "github.com/cnxysoft/DDBOT-WSa/lsp/twitch"
-	_ "github.com/cnxysoft/DDBOT-WSa/lsp/twitter"
-	_ "github.com/cnxysoft/DDBOT-WSa/lsp/weibo"
-	_ "github.com/cnxysoft/DDBOT-WSa/lsp/youtube"
-	_ "github.com/cnxysoft/DDBOT-WSa/msg-marker"
-	"github.com/cnxysoft/DDBOT-WSa/utils"
-	"github.com/cnxysoft/DDBOT-WSa/warn"
+	"github.com/Oumainory/DDBOT-AI"
+	"github.com/Oumainory/DDBOT-AI/internal/adminreset"
+	"github.com/Oumainory/DDBOT-AI/internal/auth"
+	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
+	_ "github.com/Oumainory/DDBOT-AI/logging"
+	"github.com/Oumainory/DDBOT-AI/lsp"
+	_ "github.com/Oumainory/DDBOT-AI/lsp/acfun"
+	"github.com/Oumainory/DDBOT-AI/lsp/bilibili"
+	localdb "github.com/Oumainory/DDBOT-AI/lsp/buntdb"
+	_ "github.com/Oumainory/DDBOT-AI/lsp/douyin"
+	_ "github.com/Oumainory/DDBOT-AI/lsp/douyu"
+	_ "github.com/Oumainory/DDBOT-AI/lsp/huya"
+	"github.com/Oumainory/DDBOT-AI/lsp/permission"
+	_ "github.com/Oumainory/DDBOT-AI/lsp/twitch"
+	_ "github.com/Oumainory/DDBOT-AI/lsp/twitter"
+	_ "github.com/Oumainory/DDBOT-AI/lsp/weibo"
+	_ "github.com/Oumainory/DDBOT-AI/lsp/youtube"
+	_ "github.com/Oumainory/DDBOT-AI/msg-marker"
+	"github.com/Oumainory/DDBOT-AI/utils"
+	"github.com/Oumainory/DDBOT-AI/warn"
 	"net/http"
 	_ "net/http/pprof"
 )
@@ -102,7 +102,7 @@ func main() {
 	fmt.Println("DDBOT-AI")
 	fmt.Println("DDBOT交流群：755612788（已满）、980848391")
 	fmt.Println("二次修改:https://github.com/Hoshinonyaruko/DDBOT-ws")
-	fmt.Println("三次修改:https://github.com/cnxysoft/DDBOT-WSa")
+	fmt.Println("三次修改:https://github.com/Oumainory/DDBOT-AI")
 	fmt.Println("本分支版本主要以修复功能并接入OneBot协议的BOT框架为目的")
 	fmt.Println("主流框架：LLOneBot、NapCat、Lagrange")
 	fmt.Println("LLOneBot:https://llonebot.github.io/")

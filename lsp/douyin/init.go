@@ -2,7 +2,7 @@ package douyin
 
 import (
 	"github.com/Sora233/MiraiGo-Template/config"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern"
 	"net/http/cookiejar"
 	"strings"
 )

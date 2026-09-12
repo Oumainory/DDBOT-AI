@@ -7,13 +7,13 @@ import (
 	"strings"
 
 	"github.com/Sora233/MiraiGo-Template/config"
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	localdb "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/permission"
-	lsptelegram "github.com/cnxysoft/DDBOT-WSa/lsp/telegram"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/weibo"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	localdb "github.com/Oumainory/DDBOT-AI/lsp/buntdb"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern"
+	"github.com/Oumainory/DDBOT-AI/lsp/mmsg"
+	"github.com/Oumainory/DDBOT-AI/lsp/permission"
+	lsptelegram "github.com/Oumainory/DDBOT-AI/lsp/telegram"
+	"github.com/Oumainory/DDBOT-AI/lsp/weibo"
 )
 
 // StartTelegramCommands sets up a Telegram receiving loop that parses commands

@@ -1,6 +1,6 @@
 package mmsg
 
-import "github.com/cnxysoft/DDBOT-WSa/adapter"
+import "github.com/Oumainory/DDBOT-AI/adapter"
 
 // TypedElement 根据TargetType选择不同的element，不解决循环问题，使用不当可能导致堆栈溢出
 // 可以同时设置 OnGroup 和 OnPrivate ，发送时会根据目标自动选择

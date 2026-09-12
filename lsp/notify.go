@@ -6,13 +6,13 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	"github.com/cnxysoft/DDBOT-WSa/internal/observation"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
-	lsptelegram "github.com/cnxysoft/DDBOT-WSa/lsp/telegram"
-	"github.com/cnxysoft/DDBOT-WSa/utils"
-	"github.com/cnxysoft/DDBOT-WSa/utils/msgstringer"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	"github.com/Oumainory/DDBOT-AI/internal/observation"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern"
+	"github.com/Oumainory/DDBOT-AI/lsp/mmsg"
+	lsptelegram "github.com/Oumainory/DDBOT-AI/lsp/telegram"
+	"github.com/Oumainory/DDBOT-AI/utils"
+	"github.com/Oumainory/DDBOT-AI/utils/msgstringer"
 	"github.com/sirupsen/logrus"
 )
 

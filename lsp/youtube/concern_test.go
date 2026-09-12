@@ -3,8 +3,8 @@ package youtube
 import (
 	"context"
 	miraiConfig "github.com/Sora233/MiraiGo-Template/config"
-	"github.com/cnxysoft/DDBOT-WSa/internal/test"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
+	"github.com/Oumainory/DDBOT-AI/internal/test"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern"
 	"github.com/stretchr/testify/assert"
 	"testing"
 	"time"

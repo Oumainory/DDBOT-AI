@@ -3,9 +3,9 @@ package template
 import (
 	"embed"
 	"fmt"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/cfg"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
+	"github.com/Oumainory/DDBOT-AI/lsp/buntdb"
+	"github.com/Oumainory/DDBOT-AI/lsp/cfg"
+	"github.com/Oumainory/DDBOT-AI/lsp/mmsg"
 	"github.com/fsnotify/fsnotify"
 	"os"
 	"path/filepath"

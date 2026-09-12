@@ -1,6 +1,6 @@
 package concern
 
-import "github.com/cnxysoft/DDBOT-WSa/adapter"
+import "github.com/Oumainory/DDBOT-AI/adapter"
 
 // ICallback 定义了一些针对 Notify 推送前后的 callback
 type ICallback interface {

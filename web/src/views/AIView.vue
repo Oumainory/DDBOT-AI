@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { command, displayError, get, isUnauthorized, post } from '../api/client'
-import type { AIProvider, AIProfile, AIDecision, AIShadowSummary, AIPolicy, AIEvaluationRun, AIEvaluationCase } from '../api/types'
+import type { AIProvider, AIProfile, AIDecision, AIShadowSummary, AIPolicy, AIEvaluationRun, AIEvaluationCase, Phase5Readiness, Phase5RouteDecision, Phase5Delivery, MediaCacheSummary } from '../api/types'
 import DashboardLayout from '../components/DashboardLayout.vue'
 import { useAuthStore } from '../stores/auth'
 import { useRouter } from 'vue-router'
@@ -35,11 +35,17 @@ const profileForm = ref({
 const policyScope = ref<'global' | 'source' | 'target' | 'subscription'>('global')
 const policyScopeID = ref('')
 const policyLoading = ref(false)
+const readiness = ref<Phase5Readiness | null>(null)
+const emergencyDisabled = ref(false)
+const routeDecisions = ref<Phase5RouteDecision[]>([])
+const deliveries = ref<Phase5Delivery[]>([])
+const mediaSummary = ref<MediaCacheSummary | null>(null)
+const phase5Busy = ref(false)
 
 async function load() {
   loading.value = true
   try {
-    const [providerData, profileData, summaryData, decisionData, policyData, runData, caseData] = await Promise.all([
+    const [providerData, profileData, summaryData, decisionData, policyData, runData, caseData, readinessData, routeData, deliveryData, mediaData] = await Promise.all([
       get<{ provider?: AIProvider }>('/api/v2/ai/provider'),
       get<{ items: AIProfile[] }>('/api/v2/ai/profiles'),
       get<{ summary: AIShadowSummary }>('/api/v2/ai/shadow/summary'),
@@ -47,6 +53,10 @@ async function load() {
       get<AIPolicy>('/api/v2/ai/policy/global'),
       get<{ items: AIEvaluationRun[] }>('/api/v2/ai/evaluation/runs'),
       get<{ items: AIEvaluationCase[] }>('/api/v2/ai/evaluation/cases'),
+      get<{ readiness: Phase5Readiness; emergency_disabled?: boolean }>('/api/v2/ai/enforce/readiness'),
+      get<{ items: Phase5RouteDecision[] }>('/api/v2/route-decisions?limit=20'),
+      get<{ items: Phase5Delivery[] }>('/api/v2/deliveries?limit=20'),
+      get<MediaCacheSummary>('/api/v2/media-cache/summary'),
     ])
     provider.value = providerData.provider ?? null
     if (provider.value) {
@@ -60,6 +70,11 @@ async function load() {
     policy.value = policyData ?? policy.value
     runs.value = runData.items ?? []
     cases.value = caseData.items ?? []
+    readiness.value = readinessData.readiness ?? null
+    emergencyDisabled.value = Boolean(readinessData.emergency_disabled)
+    routeDecisions.value = routeData.items ?? []
+    deliveries.value = deliveryData.items ?? []
+    mediaSummary.value = mediaData ?? null
     error.value = ''
   } catch (err) {
     if (isUnauthorized(err)) {
@@ -72,6 +87,27 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+async function enforceCommand(path: string, body: unknown = {}) {
+  phase5Busy.value = true
+  try {
+    await command(path, 'POST', body, auth.csrfToken)
+    await load()
+  } catch (err) {
+    error.value = displayError(err)
+  } finally {
+    phase5Busy.value = false
+  }
+}
+
+function approveEnforce() { return enforceCommand('/api/v2/ai/enforce/approve', {}) }
+function revokeEnforce() { return enforceCommand('/api/v2/ai/enforce/revoke', {}) }
+function disableEmergency() { return enforceCommand('/api/v2/ai/enforce/emergency-disable', {}) }
+function enableEmergency() { return enforceCommand('/api/v2/ai/enforce/emergency-enable', {}) }
+
+async function replayDecision(item: Phase5RouteDecision) {
+  await enforceCommand(`/api/v2/route-decisions/${encodeURIComponent(item.id)}/replay`, {})
 }
 
 function openProfile(profile?: AIProfile) {
@@ -265,9 +301,9 @@ onMounted(load)
   <DashboardLayout>
     <div class="page-heading">
       <div>
-        <p class="eyebrow">AI SHADOW</p>
+        <p class="eyebrow">AI ROUTING</p>
         <h1>语义筛选</h1>
-        <p>AI 只记录 Shadow 判断，Legacy 推送始终保持 PASS。ENFORCE 在 Phase 4 不可用。</p>
+        <p>AI 负责理解内容；只有满足就绪、审批和安全条件的 ENFORCE DROP 才能抑制原始推送。</p>
       </div>
       <el-button :loading="loading" @click="load">刷新</el-button>
     </div>
@@ -284,6 +320,36 @@ onMounted(load)
         </el-form>
         <el-tag v-if="provider?.credential_configured" type="success">credential 已配置</el-tag>
         <el-tag v-else type="info">尚未配置 credential</el-tag>
+      </el-card>
+      <el-card shadow="never">
+        <template #header><div class="card-heading"><span>ENFORCE 就绪</span><el-tag :type="readiness?.ready && !emergencyDisabled ? 'success' : 'warning'">{{ emergencyDisabled ? '紧急禁用' : readiness?.ready ? '可用' : '锁定' }}</el-tag></div></template>
+        <el-skeleton v-if="loading && !readiness" :rows="4" animated />
+        <template v-else-if="readiness">
+          <div class="metric-grid">
+            <div><strong>{{ readiness.shadow_decisions }}</strong><span>Shadow 决策</span></div>
+            <div><strong>{{ readiness.reviewed_suggested_drop }}</strong><span>已复核 DROP</span></div>
+            <div><strong>{{ (readiness.drop_precision * 100).toFixed(1) }}%</strong><span>DROP precision</span></div>
+            <div><strong>{{ (readiness.parse_success * 100).toFixed(1) }}%</strong><span>解析成功率</span></div>
+          </div>
+          <p class="muted">当前 Release：{{ readiness.current_release_id || '尚未激活' }}</p>
+          <p v-if="readiness.reasons.length" class="muted">锁定原因：{{ readiness.reasons.join('、') }}</p>
+          <div class="button-row">
+            <el-button size="small" type="primary" :loading="phase5Busy" :disabled="!readiness.ready || emergencyDisabled" @click="approveEnforce">审批当前 Release</el-button>
+            <el-button size="small" :loading="phase5Busy" @click="revokeEnforce">撤销审批</el-button>
+            <el-button v-if="!emergencyDisabled" size="small" type="danger" plain :loading="phase5Busy" @click="disableEmergency">紧急禁用</el-button>
+            <el-button v-else size="small" :loading="phase5Busy" @click="enableEmergency">恢复 ENFORCE</el-button>
+          </div>
+        </template>
+      </el-card>
+      <el-card shadow="never">
+        <template #header><span>Media Cache</span></template>
+        <div v-if="mediaSummary" class="metric-grid">
+          <div><strong>{{ mediaSummary.entries }}</strong><span>文件</span></div>
+          <div><strong>{{ mediaSummary.bytes }}</strong><span>字节</span></div>
+          <div><strong>{{ mediaSummary.linked_events }}</strong><span>关联事件</span></div>
+          <div><strong>{{ mediaSummary.expired }}</strong><span>待清理</span></div>
+        </div>
+        <p class="muted">仅缓存公开媒体；回放顺序为缓存 → 远端 → 文本/链接。</p>
       </el-card>
       <el-card shadow="never">
         <template #header><span>Shadow Summary</span></template>
@@ -331,6 +397,7 @@ onMounted(load)
             <el-select v-model="policy.mode">
               <el-option label="Shadow" value="shadow" />
               <el-option label="Off" value="off" />
+              <el-option label="Enforce（需审批）" value="enforce" />
               <el-option label="Inherit" value="inherit" />
             </el-select>
           </el-form-item>
@@ -342,7 +409,7 @@ onMounted(load)
           </el-form-item>
           <el-button type="primary" @click="savePolicy">保存策略</el-button>
         </el-form>
-        <p class="muted">ENFORCE 在 Phase 4 锁定，不提供启用开关。</p>
+        <p class="muted">ENFORCE 只有在当前 Release 通过全部门槛且存在匹配审批时才会生效；任何异常均 PASS。</p>
       </el-card>
       <el-card shadow="never">
         <template #header><span>Evaluation Runs（{{ runs.length }}）</span></template>
@@ -366,6 +433,27 @@ onMounted(load)
         <el-table-column label="复核" width="100"><template #default="scope"><el-tag v-if="scope.row.reviewed" type="success">已复核</el-tag><el-button v-else size="small" @click="reviewDecision(scope.row)">标记复核</el-button></template></el-table-column>
       </el-table>
     </el-card>
+    <div class="ai-grid">
+      <el-card shadow="never">
+        <template #header><span>Recent Route Decisions（{{ routeDecisions.length }}）</span></template>
+        <el-table :data="routeDecisions" stripe>
+          <el-table-column prop="created_at" label="时间" width="180" />
+          <el-table-column prop="configured_mode" label="配置" width="100" />
+          <el-table-column prop="effective_action" label="动作" width="90" />
+          <el-table-column prop="reason_code" label="原因" />
+          <el-table-column label="操作" width="90"><template #default="scope"><el-button v-if="scope.row.effective_action === 'drop'" size="small" @click="replayDecision(scope.row)">回放</el-button></template></el-table-column>
+        </el-table>
+      </el-card>
+      <el-card shadow="never">
+        <template #header><span>Delivery 状态（{{ deliveries.length }}）</span></template>
+        <el-table :data="deliveries" stripe>
+          <el-table-column prop="created_at" label="时间" width="180" />
+          <el-table-column prop="status" label="状态" width="140" />
+          <el-table-column prop="target_id" label="Target" />
+          <el-table-column prop="result_code" label="结果" />
+        </el-table>
+      </el-card>
+    </div>
     <el-card shadow="never" class="ai-card">
       <template #header><div class="card-heading"><span>Evaluation Dataset（{{ cases.length }}）</span><el-button size="small" @click="exportCases">导出</el-button></div></template>
       <el-form label-position="top" class="case-form">

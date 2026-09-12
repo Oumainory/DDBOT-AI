@@ -1459,7 +1459,7 @@ GetIgnoreExpire: Get配置，忽略key的过期时间，如果key曾经设置过
 以及开启下播推送：
 {{ prefix }}config offline_notify 97505 on
 BOT还支持更多功能，详细命令介绍请查看命令文档：
-https://github.com/cnxysoft/DDBOT-WSa/blob/master/EXAMPLE.md
+https://github.com/Oumainory/DDBOT-AI/blob/master/EXAMPLE.md
 使用时请把作者UID换成你需要的UID
 当您完成所有配置后，可以使用{{ prefix }}silence命令，让bot专注于推送，在群内发言更少
 {{- cut -}}

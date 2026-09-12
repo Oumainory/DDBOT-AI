@@ -1,6 +1,6 @@
 package mmsg
 
-import "github.com/cnxysoft/DDBOT-WSa/adapter"
+import "github.com/Oumainory/DDBOT-AI/adapter"
 
 const (
 	ImageBytes adapter.ElementType = 10000 + iota

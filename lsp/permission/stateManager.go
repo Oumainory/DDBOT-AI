@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/Sora233/MiraiGo-Template/utils"
-	localdb "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
-	localutils "github.com/cnxysoft/DDBOT-WSa/utils"
+	localdb "github.com/Oumainory/DDBOT-AI/lsp/buntdb"
+	localutils "github.com/Oumainory/DDBOT-AI/utils"
 	"github.com/sirupsen/logrus"
 	"github.com/tidwall/buntdb"
 )

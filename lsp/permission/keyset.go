@@ -1,7 +1,7 @@
 package permission
 
 import (
-    localdb "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
+    localdb "github.com/Oumainory/DDBOT-AI/lsp/buntdb"
 )
 
 // Namespace support: allow separating QQ and TG permission stores via key base name.

@@ -3,15 +3,15 @@ module github.com/Sora233/MiraiGo-Template
 go 1.26.2
 
 replace (
-	github.com/cnxysoft/DDBOT-WSa => ../
-	github.com/cnxysoft/DDBOT-WSa/adapter => ../adapter
-	github.com/cnxysoft/DDBOT-WSa/utils => ../utils
-	github.com/cnxysoft/DDBOT-WSa/utils/qqlog => ../utils/qqlog
+	github.com/Oumainory/DDBOT-AI => ../
+	github.com/Oumainory/DDBOT-AI/adapter => ../adapter
+	github.com/Oumainory/DDBOT-AI/utils => ../utils
+	github.com/Oumainory/DDBOT-AI/utils/qqlog => ../utils/qqlog
 )
 
 require (
-	github.com/cnxysoft/DDBOT-WSa v0.0.0-20250620022611-51ba1e929e90
-	github.com/cnxysoft/DDBOT-WSa/adapter v0.0.0
+	github.com/Oumainory/DDBOT-AI v0.0.0-20250620022611-51ba1e929e90
+	github.com/Oumainory/DDBOT-AI/adapter v0.0.0
 	github.com/lestrrat-go/file-rotatelogs v2.4.0+incompatible
 	github.com/rifflock/lfshook v0.0.0-20180920164130-b9218ef580f5
 	github.com/sirupsen/logrus v1.9.4
@@ -25,8 +25,8 @@ require (
 	github.com/andybalholm/brotli v1.0.5 // indirect
 	github.com/bytedance/sonic v1.9.2 // indirect
 	github.com/chenzhuoyu/base64x v0.0.0-20221115062448-fe3a3abad311 // indirect
-	github.com/cnxysoft/DDBOT-WSa/lsp/eventbus v0.0.0-20251103113836-bf7ecd344df7 // indirect
-	github.com/cnxysoft/DDBOT-WSa/utils/qqlog v0.0.0 // indirect
+	github.com/Oumainory/DDBOT-AI/lsp/eventbus v0.0.0-20251103113836-bf7ecd344df7 // indirect
+	github.com/Oumainory/DDBOT-AI/utils/qqlog v0.0.0 // indirect
 	github.com/ericpauley/go-quantize v0.0.0-20200331213906-ae555eb2afa4 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fumiama/imgsz v0.0.4 // indirect

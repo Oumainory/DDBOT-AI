@@ -2,8 +2,8 @@ package douyu
 
 import (
 	"context"
-	"github.com/cnxysoft/DDBOT-WSa/internal/test"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
+	"github.com/Oumainory/DDBOT-AI/internal/test"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"testing"

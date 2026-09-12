@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/Sora233/MiraiGo-Template/config"
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	localutils "github.com/cnxysoft/DDBOT-WSa/utils"
-	"github.com/cnxysoft/DDBOT-WSa/utils/msgstringer"
-	"github.com/cnxysoft/DDBOT-WSa/utils/qqlog"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	localutils "github.com/Oumainory/DDBOT-AI/utils"
+	"github.com/Oumainory/DDBOT-AI/utils/msgstringer"
+	"github.com/Oumainory/DDBOT-AI/utils/qqlog"
 	rotatelogs "github.com/lestrrat-go/file-rotatelogs"
 	"github.com/sirupsen/logrus"
 

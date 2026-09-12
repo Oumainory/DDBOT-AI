@@ -1,7 +1,7 @@
 package local_proxy_pool
 
 import (
-	"github.com/cnxysoft/DDBOT-WSa/proxy_pool"
+	"github.com/Oumainory/DDBOT-AI/proxy_pool"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )

@@ -11,8 +11,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/observation"
-	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
+	"github.com/Oumainory/DDBOT-AI/internal/observation"
+	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
 )
 
 const observationCursorVersion = 1

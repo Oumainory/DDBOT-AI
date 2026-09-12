@@ -6,8 +6,8 @@ package template
 
 import (
 	"fmt"
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	"github.com/Oumainory/DDBOT-AI/lsp/mmsg"
 	"reflect"
 	"runtime"
 	"strings"

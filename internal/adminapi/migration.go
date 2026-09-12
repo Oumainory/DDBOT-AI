@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/domain"
-	"github.com/cnxysoft/DDBOT-WSa/internal/pairing"
-	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
+	"github.com/Oumainory/DDBOT-AI/internal/domain"
+	"github.com/Oumainory/DDBOT-AI/internal/pairing"
+	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
 )
 
 type migrationCreateRequest struct {

@@ -3,7 +3,7 @@ package policy
 import (
 	"testing"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/domain"
+	"github.com/Oumainory/DDBOT-AI/internal/domain"
 )
 
 func TestResolvePolicyHardSafetyAndTagPriority(t *testing.T) {

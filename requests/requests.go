@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/Sora233/MiraiGo-Template/utils"
-	"github.com/cnxysoft/DDBOT-WSa/proxy_pool"
+	"github.com/Oumainory/DDBOT-AI/proxy_pool"
 	"github.com/guonaihong/gout"
 	"github.com/guonaihong/gout/dataflow"
 	"github.com/guonaihong/gout/middler"

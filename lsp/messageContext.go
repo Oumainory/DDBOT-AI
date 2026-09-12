@@ -1,8 +1,8 @@
 package lsp
 
 import (
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	"github.com/Oumainory/DDBOT-AI/lsp/mmsg"
 	"github.com/sirupsen/logrus"
 )
 

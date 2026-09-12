@@ -2,8 +2,8 @@ package concern
 
 import (
 	"errors"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern_type"
+	"github.com/Oumainory/DDBOT-AI/lsp/mmsg"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )

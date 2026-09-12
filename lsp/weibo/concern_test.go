@@ -3,7 +3,7 @@ package weibo
 import (
 	"testing"
 
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern_type"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern_type"
 )
 
 func TestConcernTypesExcludesCookieAlert(t *testing.T) {

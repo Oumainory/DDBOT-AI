@@ -1,3 +1,3 @@
-module github.com/cnxysoft/DDBOT-WSa/lsp/eventbus
+module github.com/Oumainory/DDBOT-AI/lsp/eventbus
 
 go 1.23.4

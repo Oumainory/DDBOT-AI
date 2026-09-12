@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
+	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
 	_ "modernc.org/sqlite"
 )
 

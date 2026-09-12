@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/cfg"
+	"github.com/Oumainory/DDBOT-AI/lsp/buntdb"
+	"github.com/Oumainory/DDBOT-AI/lsp/cfg"
 )
 
 const smidV2Expire = time.Hour * 24 * 365 // smidv2 有效期约 1 年

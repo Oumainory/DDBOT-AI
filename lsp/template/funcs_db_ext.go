@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	localdb "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
+	localdb "github.com/Oumainory/DDBOT-AI/lsp/buntdb"
 )
 
 func decKeys(key string) (K []interface{}) {

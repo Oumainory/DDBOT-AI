@@ -1,7 +1,7 @@
 package utils
 
 import (
-	"github.com/cnxysoft/DDBOT-WSa/internal/test"
+	"github.com/Oumainory/DDBOT-AI/internal/test"
 	"github.com/guonaihong/gout"
 	"github.com/stretchr/testify/assert"
 	"html"

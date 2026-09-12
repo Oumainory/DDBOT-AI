@@ -1,7 +1,7 @@
 package huya
 
 import (
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern"
 )
 
 type GroupConcernConfig struct {

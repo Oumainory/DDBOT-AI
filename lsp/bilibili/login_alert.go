@@ -6,9 +6,9 @@ import (
 	"sync/atomic"
 
 	"github.com/Sora233/MiraiGo-Template/bot"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/permission"
-	"github.com/cnxysoft/DDBOT-WSa/utils/msgstringer"
+	"github.com/Oumainory/DDBOT-AI/lsp/mmsg"
+	"github.com/Oumainory/DDBOT-AI/lsp/permission"
+	"github.com/Oumainory/DDBOT-AI/utils/msgstringer"
 )
 
 type bilibiliLoginAlertSource uint8

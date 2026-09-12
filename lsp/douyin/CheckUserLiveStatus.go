@@ -3,8 +3,8 @@ package douyin
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/cnxysoft/DDBOT-WSa/requests"
-	"github.com/cnxysoft/DDBOT-WSa/utils"
+	"github.com/Oumainory/DDBOT-AI/requests"
+	"github.com/Oumainory/DDBOT-AI/utils"
 )
 
 const PathCheckUserLiveStatus = "/webcast/distribution/check_user_live_status/"

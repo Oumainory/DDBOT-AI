@@ -5,11 +5,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	ob11 "github.com/cnxysoft/DDBOT-WSa/adapter/onebot-v11"
-	"github.com/cnxysoft/DDBOT-WSa/adapter/satori"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/eventbus"
-	localutils "github.com/cnxysoft/DDBOT-WSa/utils"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	ob11 "github.com/Oumainory/DDBOT-AI/adapter/onebot-v11"
+	"github.com/Oumainory/DDBOT-AI/adapter/satori"
+	"github.com/Oumainory/DDBOT-AI/lsp/eventbus"
+	localutils "github.com/Oumainory/DDBOT-AI/utils"
 	"github.com/sirupsen/logrus"
 	"go.uber.org/atomic"
 )

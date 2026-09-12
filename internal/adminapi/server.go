@@ -14,23 +14,26 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/adminauth"
-	"github.com/cnxysoft/DDBOT-WSa/internal/auth"
-	"github.com/cnxysoft/DDBOT-WSa/internal/buildinfo"
-	"github.com/cnxysoft/DDBOT-WSa/internal/csrf"
-	"github.com/cnxysoft/DDBOT-WSa/internal/discovery"
-	"github.com/cnxysoft/DDBOT-WSa/internal/evaluation"
-	"github.com/cnxysoft/DDBOT-WSa/internal/idempotency"
-	"github.com/cnxysoft/DDBOT-WSa/internal/migration"
-	"github.com/cnxysoft/DDBOT-WSa/internal/observation"
-	"github.com/cnxysoft/DDBOT-WSa/internal/origin"
-	"github.com/cnxysoft/DDBOT-WSa/internal/pairing"
-	"github.com/cnxysoft/DDBOT-WSa/internal/platformdb"
-	"github.com/cnxysoft/DDBOT-WSa/internal/provider"
-	"github.com/cnxysoft/DDBOT-WSa/internal/secretstore"
-	"github.com/cnxysoft/DDBOT-WSa/internal/session"
-	"github.com/cnxysoft/DDBOT-WSa/internal/shadow"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/subscription"
+	"github.com/Oumainory/DDBOT-AI/internal/adminauth"
+	"github.com/Oumainory/DDBOT-AI/internal/auth"
+	"github.com/Oumainory/DDBOT-AI/internal/buildinfo"
+	"github.com/Oumainory/DDBOT-AI/internal/csrf"
+	"github.com/Oumainory/DDBOT-AI/internal/discovery"
+	"github.com/Oumainory/DDBOT-AI/internal/enforce"
+	"github.com/Oumainory/DDBOT-AI/internal/evaluation"
+	"github.com/Oumainory/DDBOT-AI/internal/idempotency"
+	"github.com/Oumainory/DDBOT-AI/internal/mediacache"
+	"github.com/Oumainory/DDBOT-AI/internal/migration"
+	"github.com/Oumainory/DDBOT-AI/internal/observation"
+	"github.com/Oumainory/DDBOT-AI/internal/origin"
+	"github.com/Oumainory/DDBOT-AI/internal/pairing"
+	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
+	"github.com/Oumainory/DDBOT-AI/internal/provider"
+	"github.com/Oumainory/DDBOT-AI/internal/replay"
+	"github.com/Oumainory/DDBOT-AI/internal/secretstore"
+	"github.com/Oumainory/DDBOT-AI/internal/session"
+	"github.com/Oumainory/DDBOT-AI/internal/shadow"
+	"github.com/Oumainory/DDBOT-AI/lsp/subscription"
 	"go.uber.org/atomic"
 )
 
@@ -59,6 +62,10 @@ type Config struct {
 	AIProvider            *provider.Swappable
 	ShadowRuntime         *shadow.Runtime
 	EvaluationRunner      *evaluation.Runner
+	Phase5Repository      *platformdb.Phase5Repository
+	EnforceRuntime        *enforce.Runtime
+	ReplayService         *replay.Service
+	MediaCache            *mediacache.Cache
 }
 
 type Server struct {
@@ -86,6 +93,10 @@ type Server struct {
 	aiProvider            *provider.Swappable
 	shadowRuntime         *shadow.Runtime
 	evaluationRunner      *evaluation.Runner
+	phase5Repository      *platformdb.Phase5Repository
+	enforceRuntime        *enforce.Runtime
+	replayService         *replay.Service
+	mediaCache            *mediacache.Cache
 	testMu                sync.Mutex
 	testLast              map[string]time.Time
 	aiTestLast            map[string]time.Time
@@ -228,6 +239,10 @@ func NewServer(config Config) (*Server, error) {
 		aiProvider:            config.AIProvider,
 		shadowRuntime:         config.ShadowRuntime,
 		evaluationRunner:      config.EvaluationRunner,
+		phase5Repository:      config.Phase5Repository,
+		enforceRuntime:        config.EnforceRuntime,
+		replayService:         config.ReplayService,
+		mediaCache:            config.MediaCache,
 		testLast:              make(map[string]time.Time),
 		aiTestLast:            make(map[string]time.Time),
 		authHandler:           authServer.Handler(),
@@ -295,6 +310,9 @@ func (s *Server) Handler() http.Handler {
 		case "/api/v2/ai/enforce-readiness":
 			s.handleAIEnforceReadiness(w, r)
 		default:
+			if s.handlePhase5Subresource(w, r) {
+				return
+			}
 			if s.handleMigrationSubresource(w, r) {
 				return
 			}

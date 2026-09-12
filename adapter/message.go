@@ -205,6 +205,10 @@ type GroupMessage struct {
 	// from serialized adapter payloads; a held delivery has its durable
 	// identity in delivery_migration_holds instead.
 	MigrationHeld bool `json:"-"`
+	// EnforceDropped marks a message intentionally suppressed by the optional
+	// Phase 5 authoritative routing hook after a durable DROP decision. It is
+	// process-local metadata and is omitted from all adapter serialization.
+	EnforceDropped bool `json:"-"`
 }
 
 // PrivateMessage represents a private message event.

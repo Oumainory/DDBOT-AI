@@ -3,7 +3,11 @@
 // rendering, delivery, or retry decisions.
 package observation
 
-import "time"
+import (
+	"time"
+
+	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
+)
 
 const (
 	ObservationSchemaVersion = 1
@@ -64,6 +68,11 @@ type DeliveryInput struct {
 type Trace struct {
 	eventObservationID string
 	valid              bool
+	// eventSnapshot is the same allowlisted public projection that is queued
+	// for persistence. Keeping it on the correlation handle lets an
+	// authoritative pre-send hook make a decision without racing the
+	// recorder's asynchronous worker; it never contains a raw source payload.
+	eventSnapshot platformdb.ObservedEventRecord
 }
 
 func (t Trace) Valid() bool { return t.valid && t.eventObservationID != "" }
@@ -75,11 +84,22 @@ func (t Trace) EventObservationID() string {
 	return t.eventObservationID
 }
 
+// EventSnapshot returns the allowlisted public event projection associated
+// with this trace. The value is copied so callers cannot mutate recorder
+// state. An invalid trace returns false.
+func (t Trace) EventSnapshot() (platformdb.ObservedEventRecord, bool) {
+	if !t.Valid() || t.eventSnapshot.ID == "" {
+		return platformdb.ObservedEventRecord{}, false
+	}
+	return t.eventSnapshot, true
+}
+
 type RouteTrace struct {
 	eventObservationID string
 	routeObservationID string
 	destinationID      string
 	valid              bool
+	eventSnapshot      platformdb.ObservedEventRecord
 }
 
 func (t RouteTrace) Valid() bool {
@@ -105,4 +125,14 @@ func (t RouteTrace) DestinationExternalID() string {
 		return ""
 	}
 	return t.destinationID
+}
+
+// EventSnapshot returns the public event projection carried through the
+// route correlation handle. This is intentionally a value copy and contains
+// no connector, credential, or process-owned objects.
+func (t RouteTrace) EventSnapshot() (platformdb.ObservedEventRecord, bool) {
+	if !t.Valid() || t.eventSnapshot.ID == "" {
+		return platformdb.ObservedEventRecord{}, false
+	}
+	return t.eventSnapshot, true
 }

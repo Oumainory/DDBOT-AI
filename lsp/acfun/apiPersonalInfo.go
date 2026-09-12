@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/requests"
-	"github.com/cnxysoft/DDBOT-WSa/utils"
+	"github.com/Oumainory/DDBOT-AI/requests"
+	"github.com/Oumainory/DDBOT-AI/utils"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 

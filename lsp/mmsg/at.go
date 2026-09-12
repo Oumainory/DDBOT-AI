@@ -3,8 +3,8 @@ package mmsg
 import (
 	"fmt"
 
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	localutils "github.com/cnxysoft/DDBOT-WSa/utils"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	localutils "github.com/Oumainory/DDBOT-AI/utils"
 )
 
 type AtElement struct {

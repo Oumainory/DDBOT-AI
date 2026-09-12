@@ -3,8 +3,8 @@ package youtube
 import (
 	"testing"
 
-	"github.com/cnxysoft/DDBOT-WSa/internal/test"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/template"
+	"github.com/Oumainory/DDBOT-AI/internal/test"
+	"github.com/Oumainory/DDBOT-AI/lsp/template"
 	"github.com/stretchr/testify/assert"
 )
 

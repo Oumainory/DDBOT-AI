@@ -1,8 +1,8 @@
 package mmsg
 
 import (
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	"github.com/cnxysoft/DDBOT-WSa/utils"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	"github.com/Oumainory/DDBOT-AI/utils"
 )
 
 type PokeElement struct {

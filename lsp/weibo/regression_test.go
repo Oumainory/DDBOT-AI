@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/cnxysoft/DDBOT-WSa/lsp/eventbus"
+	"github.com/Oumainory/DDBOT-AI/lsp/eventbus"
 	"github.com/stretchr/testify/assert"
 )
 

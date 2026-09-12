@@ -11,7 +11,7 @@ import (
     "sync"
     "github.com/Sora233/MiraiGo-Template/config"
     tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-    "github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
+    "github.com/Oumainory/DDBOT-AI/lsp/mmsg"
     xproxy "golang.org/x/net/proxy"
     "github.com/sirupsen/logrus"
 )

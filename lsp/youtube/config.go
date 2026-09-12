@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/cnxysoft/DDBOT-WSa/lsp/concern"
+	"github.com/Oumainory/DDBOT-AI/lsp/concern"
 )
 
 const (

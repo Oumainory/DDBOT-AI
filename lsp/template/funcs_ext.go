@@ -15,12 +15,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cnxysoft/DDBOT-WSa/adapter"
-	localdb "github.com/cnxysoft/DDBOT-WSa/lsp/buntdb"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/cfg"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/interfaces"
-	"github.com/cnxysoft/DDBOT-WSa/lsp/mmsg"
-	localutils "github.com/cnxysoft/DDBOT-WSa/utils"
+	"github.com/Oumainory/DDBOT-AI/adapter"
+	localdb "github.com/Oumainory/DDBOT-AI/lsp/buntdb"
+	"github.com/Oumainory/DDBOT-AI/lsp/cfg"
+	"github.com/Oumainory/DDBOT-AI/lsp/interfaces"
+	"github.com/Oumainory/DDBOT-AI/lsp/mmsg"
+	localutils "github.com/Oumainory/DDBOT-AI/utils"
 	"github.com/shopspring/decimal"
 )
 

@@ -1,6 +1,6 @@
 package mmsg
 
-import "github.com/cnxysoft/DDBOT-WSa/adapter"
+import "github.com/Oumainory/DDBOT-AI/adapter"
 
 // ForwardOptions 合并转发消息的顶层参数
 // 对应 onebot-v11 send_group_forward_msg API 的顶层字段
