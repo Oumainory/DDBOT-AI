@@ -147,3 +147,57 @@ func TestDomainProjectionUsesConfirmedMigrationTargetForActiveRoute(t *testing.T
 		t.Fatalf("projected target=%s want mapped target %s", projections[0].TargetID, newTarget.ID)
 	}
 }
+
+func TestDomainPolicyResolutionUsesDurableSourceTargetAndSubscriptionIDs(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, Config{Path: filepath.Join(t.TempDir(), "identity-resolution.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	repo := NewDomainRepository(store)
+	legacy := []domain.LegacySubscription{{
+		Platform: "bilibili", ExternalID: "source-external-42", DisplayName: "source", SubscriptionType: "dynamic",
+		TargetType: "group", TargetExternalID: "group-external-7", TargetDisplayName: "group", Enabled: true,
+		LegacyKey: "bilibili:source-external-42:dynamic|group:group-external-7",
+	}}
+	if err := repo.RebuildProjection(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	source, err := repo.SourceByPlatformExternal(ctx, "BILIBILI", "source-external-42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.ID == "" || source.ID == source.ExternalID {
+		t.Fatalf("source identity was not durable: %#v", source)
+	}
+	projections, err := repo.ListProjections(ctx)
+	if err != nil || len(projections) != 1 {
+		t.Fatalf("projections = %#v, err=%v", projections, err)
+	}
+	target, err := repo.Target(ctx, projections[0].TargetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.ID == target.ExternalID {
+		t.Fatalf("target identity was not durable: %#v", target)
+	}
+	resolved, err := repo.ActiveProjectionForSourceTarget(ctx, source.ID, target.ID)
+	if err != nil || resolved.ID != projections[0].ID {
+		t.Fatalf("subscription projection = %#v, err=%v", resolved, err)
+	}
+	// Two enabled projections for the same durable source/target are
+	// ambiguous at the pre-send boundary. The resolver must not silently pick
+	// one external legacy key and apply the wrong policy scope.
+	legacy = append(legacy, domain.LegacySubscription{
+		Platform: "bilibili", ExternalID: "source-external-42", DisplayName: "source", SubscriptionType: "submission",
+		TargetType: "group", TargetExternalID: "group-external-7", TargetDisplayName: "group", Enabled: true,
+		LegacyKey: "bilibili:source-external-42:submission|group:group-external-7",
+	})
+	if err := repo.RebuildProjection(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.ActiveProjectionForSourceTarget(ctx, source.ID, target.ID); !errors.Is(err, domain.ErrInvalidDomain) {
+		t.Fatalf("ambiguous subscription projection = %v, want invalid domain", err)
+	}
+}

@@ -390,6 +390,27 @@ func (r *Phase5Repository) ListRouteDecisions(ctx context.Context, limit int, be
 // checks before entering this boundary. A failed transaction leaves the
 // caller free to fail open and send the original message.
 func (r *Phase5Repository) PersistDrop(ctx context.Context, decision RouteDecisionRecord, snapshot ReplayableEventRecord) error {
+	return r.persistDrop(ctx, decision, snapshot, nil)
+}
+
+// PersistDropIfAllowed is the final ENFORCE linearization boundary. It
+// rechecks the durable emergency flag, approval identity/revocation and the
+// semantic digests in the same SQLite transaction that inserts the DROP and
+// replay snapshot. If an operator commits disable/revocation first, this
+// method rejects the DROP and the caller must fail open to PASS.
+func (r *Phase5Repository) PersistDropIfAllowed(ctx context.Context, decision RouteDecisionRecord, snapshot ReplayableEventRecord, approvalID, policyDigest, profileDigest string, now time.Time) error {
+	guard := &dropCommitGuard{ApprovalID: strings.TrimSpace(approvalID), PolicyDigest: strings.TrimSpace(policyDigest), ProfileDigest: strings.TrimSpace(profileDigest), At: phase5Time(now)}
+	return r.persistDrop(ctx, decision, snapshot, guard)
+}
+
+type dropCommitGuard struct {
+	ApprovalID    string
+	PolicyDigest  string
+	ProfileDigest string
+	At            time.Time
+}
+
+func (r *Phase5Repository) persistDrop(ctx context.Context, decision RouteDecisionRecord, snapshot ReplayableEventRecord, guard *dropCommitGuard) error {
 	if err := r.require(); err != nil {
 		return err
 	}
@@ -425,6 +446,39 @@ func (r *Phase5Repository) PersistDrop(ctx context.Context, decision RouteDecisi
 			_ = tx.Rollback()
 		}
 	}()
+	if guard != nil {
+		if decision.EffectiveMode != "enforce" || decision.EnforceApprovalID != guard.ApprovalID || decision.PolicyDigest != guard.PolicyDigest || guard.ApprovalID == "" || guard.PolicyDigest == "" || guard.ProfileDigest == "" {
+			return ErrApprovalInvalid
+		}
+		var emergency string
+		err := tx.QueryRowContext(phase5Context(ctx), `SELECT value FROM release_metadata WHERE key='enforce_emergency_disabled'`).Scan(&emergency)
+		if err == nil && strings.EqualFold(strings.TrimSpace(emergency), "true") {
+			return ErrEmergencyDisabled
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		var approvedAt int64
+		var revoked sql.NullInt64
+		err = tx.QueryRowContext(phase5Context(ctx), `SELECT approved_at,revoked_at FROM enforce_approvals WHERE id=? AND classifier_release_id=? AND policy_digest=? AND profile_digest=?`, guard.ApprovalID, decision.ClassifierReleaseID, guard.PolicyDigest, guard.ProfileDigest).Scan(&approvedAt, &revoked)
+		if errors.Is(err, sql.ErrNoRows) || err != nil || revoked.Valid || time.Unix(approvedAt, 0).UTC().After(guard.At) {
+			return ErrApprovalInvalid
+		}
+		// The approval is bound to the release that was active when it was
+		// issued.  Activating a different release must invalidate an in-flight
+		// DROP even when the old approval row has not been explicitly revoked.
+		var releaseActive int
+		if err := tx.QueryRowContext(phase5Context(ctx), `SELECT active FROM classifier_releases WHERE id=?`, decision.ClassifierReleaseID).Scan(&releaseActive); err != nil || releaseActive != 1 {
+			return ErrApprovalInvalid
+		}
+		var critical int64
+		if err := tx.QueryRowContext(phase5Context(ctx), `SELECT COUNT(*) FROM feedback f JOIN route_decisions d ON d.id=f.route_decision_id JOIN ai_decisions a ON a.id=d.ai_decision_id WHERE d.classifier_release_id=? AND f.feedback_type='false_drop' AND f.resolved=0 AND json_extract(a.classification_json,'$.importance')='critical'`, decision.ClassifierReleaseID).Scan(&critical); err != nil {
+			return err
+		}
+		if critical > 0 {
+			return ErrApprovalInvalid
+		}
+	}
 	if _, err = tx.ExecContext(phase5Context(ctx), `INSERT INTO route_decisions
 (id,event_id,observed_event_id,route_observation_id,source_id,target_id,subscription_id,classifier_release_id,ai_decision_id,configured_mode,effective_mode,profile_id,policy_digest,suggested_action,effective_action,reason_code,hard_pass_reason,enforce_approval_id,created_at,decided_at)
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, decision.ID, decision.EventID, decision.ObservedEventID, decision.RouteObservationID, decision.SourceID, decision.TargetID, decision.SubscriptionID, decision.ClassifierReleaseID, decision.AIDecisionID, decision.ConfiguredMode, decision.EffectiveMode, decision.ProfileID, decision.PolicyDigest, decision.SuggestedAction, decision.EffectiveAction, decision.ReasonCode, decision.HardPassReason, decision.EnforceApprovalID, decision.CreatedAt.Unix(), decision.DecidedAt.Unix()); err != nil {
@@ -917,15 +971,20 @@ func (r *Phase5Repository) FeedbackMetrics(ctx context.Context) (knownImportantF
 	if err = r.require(); err != nil {
 		return
 	}
-	err = r.store.db.QueryRowContext(phase5Context(ctx), `SELECT COUNT(*) FROM feedback f JOIN route_decisions d ON d.id=f.route_decision_id JOIN ai_decisions a ON a.id=d.ai_decision_id WHERE f.feedback_type='false_drop' AND json_extract(a.classification_json,'$.importance') IN ('high','critical')`).Scan(&knownImportantFalseDrops)
+	var releaseID string
+	if scanErr := r.store.db.QueryRowContext(phase5Context(ctx), `SELECT COALESCE((SELECT id FROM classifier_releases WHERE active=1 LIMIT 1),'')`).Scan(&releaseID); scanErr != nil {
+		err = scanErr
+		return
+	}
+	err = r.store.db.QueryRowContext(phase5Context(ctx), `SELECT COUNT(DISTINCT f.route_decision_id) FROM feedback f JOIN route_decisions d ON d.id=f.route_decision_id AND d.classifier_release_id=? JOIN ai_decisions a ON a.id=d.ai_decision_id AND a.classifier_release_id=? WHERE f.feedback_type='false_drop' AND json_extract(a.classification_json,'$.importance') IN ('high','critical')`, releaseID, releaseID).Scan(&knownImportantFalseDrops)
 	if err != nil {
 		return
 	}
-	err = r.store.db.QueryRowContext(phase5Context(ctx), `SELECT COUNT(*) FROM feedback f JOIN route_decisions d ON d.id=f.route_decision_id JOIN ai_decisions a ON a.id=d.ai_decision_id WHERE f.feedback_type='false_drop' AND f.resolved=0 AND json_extract(a.classification_json,'$.importance')='critical'`).Scan(&unresolvedCriticalFalseDrops)
+	err = r.store.db.QueryRowContext(phase5Context(ctx), `SELECT COUNT(DISTINCT f.route_decision_id) FROM feedback f JOIN route_decisions d ON d.id=f.route_decision_id AND d.classifier_release_id=? JOIN ai_decisions a ON a.id=d.ai_decision_id AND a.classifier_release_id=? WHERE f.feedback_type='false_drop' AND f.resolved=0 AND json_extract(a.classification_json,'$.importance')='critical'`, releaseID, releaseID).Scan(&unresolvedCriticalFalseDrops)
 	if err != nil {
 		return
 	}
-	err = r.store.db.QueryRowContext(phase5Context(ctx), `SELECT COUNT(*) FROM ai_decisions WHERE suggested_action='drop' AND reviewed=1`).Scan(&reviewedSuggestedDrops)
+	err = r.store.db.QueryRowContext(phase5Context(ctx), `SELECT COUNT(DISTINCT d.id) FROM route_decisions d JOIN ai_decisions a ON a.id=d.ai_decision_id AND a.classifier_release_id=? WHERE d.classifier_release_id=? AND d.suggested_action='drop' AND a.reviewed=1`, releaseID, releaseID).Scan(&reviewedSuggestedDrops)
 	return
 }
 
@@ -975,7 +1034,11 @@ func (r *Phase5Repository) ValidEnforceApproval(ctx context.Context, releaseID, 
 	var evidence string
 	var approved, created int64
 	var revoked sql.NullInt64
-	err := r.store.db.QueryRowContext(phase5Context(ctx), `SELECT id,classifier_release_id,policy_digest,profile_digest,readiness_evidence_json,approved_at,approved_by,revoked_at,reason,created_at FROM enforce_approvals WHERE classifier_release_id=? AND policy_digest=? AND profile_digest=? AND revoked_at IS NULL ORDER BY approved_at DESC LIMIT 1`, strings.TrimSpace(releaseID), strings.TrimSpace(policyDigest), strings.TrimSpace(profileDigest)).Scan(&v.ID, &v.ClassifierReleaseID, &v.PolicyDigest, &v.ProfileDigest, &evidence, &approved, &v.ApprovedBy, &revoked, &v.Reason, &created)
+	err := r.store.db.QueryRowContext(phase5Context(ctx), `SELECT a.id,a.classifier_release_id,a.policy_digest,a.profile_digest,a.readiness_evidence_json,a.approved_at,a.approved_by,a.revoked_at,a.reason,a.created_at
+FROM enforce_approvals a
+JOIN classifier_releases cr ON cr.id=a.classifier_release_id AND cr.active=1
+WHERE a.classifier_release_id=? AND a.policy_digest=? AND a.profile_digest=? AND a.revoked_at IS NULL
+ORDER BY a.approved_at DESC LIMIT 1`, strings.TrimSpace(releaseID), strings.TrimSpace(policyDigest), strings.TrimSpace(profileDigest)).Scan(&v.ID, &v.ClassifierReleaseID, &v.PolicyDigest, &v.ProfileDigest, &evidence, &approved, &v.ApprovedBy, &revoked, &v.Reason, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return EnforceApprovalRecord{}, ErrApprovalNotFound
 	}
@@ -999,7 +1062,7 @@ func (r *Phase5Repository) ValidEnforceApproval(ctx context.Context, releaseID, 
 	// not only when an approval is created, so an operator cannot continue to
 	// suppress important content after a review arrives.
 	var critical int64
-	if err := r.store.db.QueryRowContext(phase5Context(ctx), `SELECT COUNT(*) FROM feedback f JOIN route_decisions d ON d.id=f.route_decision_id JOIN ai_decisions a ON a.id=d.ai_decision_id WHERE f.feedback_type='false_drop' AND f.resolved=0 AND json_extract(a.classification_json,'$.importance')='critical'`).Scan(&critical); err != nil {
+	if err := r.store.db.QueryRowContext(phase5Context(ctx), `SELECT COUNT(*) FROM feedback f JOIN route_decisions d ON d.id=f.route_decision_id JOIN ai_decisions a ON a.id=d.ai_decision_id AND a.classifier_release_id=? WHERE d.classifier_release_id=? AND f.feedback_type='false_drop' AND f.resolved=0 AND json_extract(a.classification_json,'$.importance')='critical'`, releaseID, releaseID).Scan(&critical); err != nil {
 		return EnforceApprovalRecord{}, err
 	}
 	if critical > 0 {
@@ -1233,7 +1296,6 @@ func (r *Phase5Repository) EvictMediaCacheEntries(ctx context.Context, before ti
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var entries []MediaCacheEntryRecord
 	var reclaimed int64
 	for rows.Next() {
@@ -1250,6 +1312,10 @@ func (r *Phase5Repository) EvictMediaCacheEntries(ctx context.Context, before ti
 		}
 	}
 	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
 		return nil, err
 	}
 	for _, entry := range entries {

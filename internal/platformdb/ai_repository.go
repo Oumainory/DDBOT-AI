@@ -937,24 +937,50 @@ func (r *AIRepository) EnforceReadiness(ctx context.Context) (EnforceReadiness, 
 	var value EnforceReadiness
 	_ = r.store.db.QueryRowContext(aiContext(ctx), `SELECT COALESCE((SELECT id FROM classifier_releases WHERE active=1 LIMIT 1),'')`).Scan(&value.CurrentReleaseID)
 	var evaluationCriticalFalseDrops int64
+	// Evaluation cases are a durable dataset, not evidence by themselves.
+	// Only the latest completed result for each case under the active release
+	// participates in readiness. This keeps an old release (or duplicate runs
+	// of the same case) from inflating a newly activated release's metrics.
+	latestEvaluationBase := `WITH latest AS (
+    SELECT r.case_id, r.suggested_action, r.expected_action,
+           ROW_NUMBER() OVER (
+               PARTITION BY r.case_id
+               ORDER BY COALESCE(run.completed_at, 0) DESC,
+                        run.created_at DESC, run.id DESC, r.id DESC
+           ) AS rn
+    FROM ai_evaluation_results r
+    JOIN ai_evaluation_runs run ON run.id = r.run_id
+    WHERE run.classifier_release_id = ? AND run.status = 'completed'
+)
+`
+	latestEvaluation := func(predicate string) string {
+		return latestEvaluationBase + `SELECT COUNT(*) FROM latest r
+JOIN ai_evaluation_cases c ON c.id = r.case_id
+WHERE r.rn = 1 AND c.label_kind='real_reviewed' AND ` + predicate
+	}
 	queries := []struct {
 		query string
 		dest  any
 	}{
-		{`SELECT COUNT(*) FROM ai_evaluation_cases WHERE label_kind='real_reviewed'`, &value.RegressionCases},
-		{`SELECT COUNT(*) FROM ai_evaluation_cases WHERE label_kind='real_reviewed' AND (expected_importance IN ('high','critical') OR critical=1) AND expected_action='pass'`, &value.ImportantPassCases},
-		{`SELECT COUNT(*) FROM ai_evaluation_results r JOIN ai_evaluation_cases c ON c.id=r.case_id WHERE c.label_kind='real_reviewed' AND (c.expected_importance IN ('high','critical') OR c.critical=1) AND r.expected_action='pass' AND r.suggested_action='drop'`, &value.KnownImportantFalseDrops},
-		{`SELECT COUNT(*) FROM ai_evaluation_results r JOIN ai_evaluation_cases c ON c.id=r.case_id WHERE c.label_kind='real_reviewed' AND (c.expected_importance='critical' OR c.critical=1) AND r.expected_action='pass' AND r.suggested_action='drop'`, &evaluationCriticalFalseDrops},
-		{`SELECT COUNT(*) FROM ai_decisions d JOIN classifier_releases cr ON cr.id=d.classifier_release_id WHERE cr.active=1 AND d.mode_at_schedule='shadow'`, &value.ShadowDecisions},
-		{`SELECT COUNT(*) FROM ai_decisions d JOIN classifier_releases cr ON cr.id=d.classifier_release_id WHERE cr.active=1 AND d.mode_at_schedule='shadow' AND d.suggested_action='drop' AND d.reviewed=1`, &value.ReviewedSuggestedDrop},
+		{latestEvaluation(`1=1`), &value.RegressionCases},
+		{latestEvaluation(`(c.expected_importance IN ('high','critical') OR c.critical=1) AND c.expected_action='pass'`), &value.ImportantPassCases},
+		{latestEvaluation(`(c.expected_importance IN ('high','critical') OR c.critical=1) AND c.expected_action='pass' AND r.suggested_action='drop'`), &value.KnownImportantFalseDrops},
+		{latestEvaluation(`(c.expected_importance='critical' OR c.critical=1) AND c.expected_action='pass' AND r.suggested_action='drop'`), &evaluationCriticalFalseDrops},
+		{`SELECT COUNT(*) FROM ai_decisions WHERE classifier_release_id=? AND mode_at_schedule='shadow'`, &value.ShadowDecisions},
+		{`SELECT COUNT(*) FROM ai_decisions WHERE classifier_release_id=? AND mode_at_schedule='shadow' AND suggested_action='drop' AND reviewed=1`, &value.ReviewedSuggestedDrop},
 	}
 	for _, item := range queries {
-		if err := r.store.db.QueryRowContext(aiContext(ctx), item.query).Scan(item.dest); err != nil {
+		if err := r.store.db.QueryRowContext(aiContext(ctx), item.query, value.CurrentReleaseID).Scan(item.dest); err != nil {
 			return EnforceReadiness{}, err
 		}
 	}
 	var dropTotal, dropCorrect int64
-	if err := r.store.db.QueryRowContext(aiContext(ctx), `SELECT COALESCE(SUM(CASE WHEN r.suggested_action='drop' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN r.suggested_action='drop' AND r.expected_action='drop' THEN 1 ELSE 0 END),0) FROM ai_evaluation_results r JOIN ai_evaluation_cases c ON c.id=r.case_id WHERE c.label_kind='real_reviewed'`).Scan(&dropTotal, &dropCorrect); err != nil {
+	dropMetrics := latestEvaluationBase + `SELECT
+    COALESCE(SUM(CASE WHEN r.suggested_action='drop' THEN 1 ELSE 0 END),0),
+    COALESCE(SUM(CASE WHEN r.suggested_action='drop' AND c.expected_action='drop' THEN 1 ELSE 0 END),0)
+FROM latest r JOIN ai_evaluation_cases c ON c.id=r.case_id
+WHERE r.rn=1 AND c.label_kind='real_reviewed'`
+	if err := r.store.db.QueryRowContext(aiContext(ctx), dropMetrics, value.CurrentReleaseID).Scan(&dropTotal, &dropCorrect); err != nil {
 		return EnforceReadiness{}, err
 	}
 	// A critical case labelled PASS but observed as DROP is unresolved until an
@@ -979,7 +1005,14 @@ func (r *AIRepository) EnforceReadiness(ctx context.Context) (EnforceReadiness, 
 	// then fold in any route-level labels without allowing synthetic fixtures to
 	// satisfy the gate on their own.
 	var feedbackFalse, feedbackCorrect, feedbackCritical int64
-	if err := r.store.db.QueryRowContext(aiContext(ctx), `SELECT COALESCE(SUM(CASE WHEN f.feedback_type='false_drop' AND json_extract(a.classification_json,'$.importance') IN ('high','critical') THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN f.feedback_type='correct_drop' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN f.feedback_type='false_drop' AND f.resolved=0 AND json_extract(a.classification_json,'$.importance')='critical' THEN 1 ELSE 0 END),0) FROM feedback f JOIN route_decisions rd ON rd.id=f.route_decision_id LEFT JOIN ai_decisions a ON a.id=rd.ai_decision_id`).Scan(&feedbackFalse, &feedbackCorrect, &feedbackCritical); err == nil {
+	if err := r.store.db.QueryRowContext(aiContext(ctx), `SELECT
+COALESCE(COUNT(DISTINCT CASE WHEN f.feedback_type='false_drop' AND json_extract(a.classification_json,'$.importance') IN ('high','critical') THEN f.route_decision_id END),0),
+COALESCE(COUNT(DISTINCT CASE WHEN f.feedback_type='correct_drop' THEN f.route_decision_id END),0),
+COALESCE(COUNT(DISTINCT CASE WHEN f.feedback_type='false_drop' AND f.resolved=0 AND json_extract(a.classification_json,'$.importance')='critical' THEN f.route_decision_id END),0)
+FROM feedback f
+JOIN route_decisions rd ON rd.id=f.route_decision_id
+JOIN ai_decisions a ON a.id=rd.ai_decision_id AND a.classifier_release_id=?
+WHERE rd.classifier_release_id=?`, value.CurrentReleaseID, value.CurrentReleaseID).Scan(&feedbackFalse, &feedbackCorrect, &feedbackCritical); err == nil {
 		value.KnownImportantFalseDrops += feedbackFalse
 		value.UnresolvedCriticalDrops += feedbackCritical
 		if feedbackFalse+feedbackCorrect > 0 {
@@ -987,7 +1020,7 @@ func (r *AIRepository) EnforceReadiness(ctx context.Context) (EnforceReadiness, 
 		}
 	}
 	var feedbackReviewedDrops int64
-	if err := r.store.db.QueryRowContext(aiContext(ctx), `SELECT COUNT(*) FROM feedback f JOIN route_decisions rd ON rd.id=f.route_decision_id WHERE f.feedback_type IN ('correct_drop','false_drop') AND rd.suggested_action='drop'`).Scan(&feedbackReviewedDrops); err == nil && feedbackReviewedDrops > value.ReviewedSuggestedDrop {
+	if err := r.store.db.QueryRowContext(aiContext(ctx), `SELECT COUNT(DISTINCT f.route_decision_id) FROM feedback f JOIN route_decisions rd ON rd.id=f.route_decision_id JOIN ai_decisions a ON a.id=rd.ai_decision_id AND a.classifier_release_id=? WHERE rd.classifier_release_id=? AND f.feedback_type IN ('correct_drop','false_drop') AND rd.suggested_action='drop'`, value.CurrentReleaseID, value.CurrentReleaseID).Scan(&feedbackReviewedDrops); err == nil && feedbackReviewedDrops > value.ReviewedSuggestedDrop {
 		value.ReviewedSuggestedDrop = feedbackReviewedDrops
 	}
 	if total > 0 {
@@ -1227,8 +1260,9 @@ func (r *AIRepository) SaveProfile(ctx context.Context, value policy.Profile, cr
 	if value.Builtin && value.ID != policy.OfficialGameProfile().ID {
 		return ErrAIProfileBuiltin
 	}
+	ctx = aiContext(ctx)
 	var existingBuiltin int
-	err := r.store.db.QueryRowContext(aiContext(ctx), "SELECT builtin FROM ai_profiles WHERE id=?", value.ID).Scan(&existingBuiltin)
+	err := r.store.db.QueryRowContext(ctx, "SELECT builtin FROM ai_profiles WHERE id=?", value.ID).Scan(&existingBuiltin)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -1246,11 +1280,52 @@ func (r *AIRepository) SaveProfile(ctx context.Context, value policy.Profile, cr
 	if existingBuiltin == 0 && value.ID == policy.OfficialGameProfile().ID && !value.Builtin {
 		return ErrAIProfileBuiltin
 	}
-	cats, _ := json.Marshal(value.CategoryActions)
-	tags, _ := json.Marshal(value.TagActions)
-	safety, _ := json.Marshal(value.Safety)
-	_, err = r.store.db.ExecContext(aiContext(ctx), `INSERT INTO ai_profiles (id,name,description,default_action,category_actions_json,tag_actions_json,safety_json,builtin,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,default_action=excluded.default_action,category_actions_json=excluded.category_actions_json,tag_actions_json=excluded.tag_actions_json,safety_json=excluded.safety_json,updated_at=excluded.updated_at`, value.ID, value.Name, value.Description, value.DefaultAction, string(cats), string(tags), string(safety), boolInt(value.Builtin), aiTime(createdAt).Unix(), aiTime(updatedAt).Unix())
-	return err
+	// Approval validity is tied to profile semantics, not merely to the
+	// profile identifier. Read the existing definition before mutating it so
+	// a semantic change can revoke approvals in the same SQLite transaction as
+	// the profile write. A re-seed of the immutable built-in profile therefore
+	// does not invalidate every approval on startup.
+	var existing policy.Profile
+	profileExists := err == nil
+	profileChanged := false
+	if profileExists {
+		var cats, tags, safety string
+		var builtin, created, updated int64
+		if err := r.store.db.QueryRowContext(ctx, `SELECT id,name,description,default_action,category_actions_json,tag_actions_json,safety_json,builtin,created_at,updated_at FROM ai_profiles WHERE id=?`, value.ID).Scan(&existing.ID, &existing.Name, &existing.Description, &existing.DefaultAction, &cats, &tags, &safety, &builtin, &created, &updated); err != nil {
+			return err
+		}
+		_ = json.Unmarshal([]byte(cats), &existing.CategoryActions)
+		_ = json.Unmarshal([]byte(tags), &existing.TagActions)
+		_ = json.Unmarshal([]byte(safety), &existing.Safety)
+		existing.Builtin = builtin != 0
+		profileChanged = !profileSemanticsEqual(existing, value)
+	}
+	categoryJSON, _ := json.Marshal(value.CategoryActions)
+	tagJSON, _ := json.Marshal(value.TagActions)
+	safetyJSON, _ := json.Marshal(value.Safety)
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO ai_profiles (id,name,description,default_action,category_actions_json,tag_actions_json,safety_json,builtin,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,default_action=excluded.default_action,category_actions_json=excluded.category_actions_json,tag_actions_json=excluded.tag_actions_json,safety_json=excluded.safety_json,updated_at=excluded.updated_at`, value.ID, value.Name, value.Description, value.DefaultAction, string(categoryJSON), string(tagJSON), string(safetyJSON), boolInt(value.Builtin), aiTime(createdAt).Unix(), aiTime(updatedAt).Unix()); err != nil {
+		return err
+	}
+	if profileChanged {
+		if err = revokeEnforceApprovalsTx(ctx, tx, aiTime(updatedAt), "profile_changed"); err != nil {
+			return err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func profileSemanticallyEqual(left, right policy.Profile) bool {
@@ -1326,8 +1401,19 @@ func (r *AIRepository) DeleteProfile(ctx context.Context, id string) error {
 	if err := r.require(); err != nil {
 		return err
 	}
+	ctx = aiContext(ctx)
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
 	var builtin int
-	if err := r.store.db.QueryRowContext(aiContext(ctx), "SELECT builtin FROM ai_profiles WHERE id=?", id).Scan(&builtin); errors.Is(err, sql.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, "SELECT builtin FROM ai_profiles WHERE id=?", id).Scan(&builtin); errors.Is(err, sql.ErrNoRows) {
 		return ErrAIProfileNotFound
 	} else if err != nil {
 		return err
@@ -1336,13 +1422,13 @@ func (r *AIRepository) DeleteProfile(ctx context.Context, id string) error {
 		return ErrAIProfileBuiltin
 	}
 	var inUse int
-	if err := r.store.db.QueryRowContext(aiContext(ctx), "SELECT EXISTS (SELECT 1 FROM ai_policy_overrides WHERE profile_id=?)", id).Scan(&inUse); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM ai_policy_overrides WHERE profile_id=?)", id).Scan(&inUse); err != nil {
 		return err
 	}
 	if inUse != 0 {
 		return ErrAIProfileInUse
 	}
-	result, err := r.store.db.ExecContext(aiContext(ctx), `DELETE FROM ai_profiles WHERE id=? AND builtin=0`, id)
+	result, err := tx.ExecContext(ctx, `DELETE FROM ai_profiles WHERE id=? AND builtin=0`, id)
 	if err != nil {
 		return err
 	}
@@ -1350,6 +1436,17 @@ func (r *AIRepository) DeleteProfile(ctx context.Context, id string) error {
 	if n != 1 {
 		return ErrAIProfileNotFound
 	}
+	// Profile deletion is a semantic policy change even when no sparse policy
+	// row currently references it.  Revoke outstanding approvals in the same
+	// transaction so an in-flight classifier cannot commit a DROP using a
+	// profile that has just been removed.
+	if err := revokeEnforceApprovalsTx(ctx, tx, aiTime(time.Now()), "profile_deleted"); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
 	return nil
 }
 
@@ -1363,9 +1460,93 @@ func (r *AIRepository) SavePolicy(ctx context.Context, value AIPolicyOverrideRec
 	if value.ScopeType == "" {
 		return ErrAIPolicyNotFound
 	}
-	cats, _ := json.Marshal(value.CategoryActions)
-	tags, _ := json.Marshal(value.TagActions)
-	_, err := r.store.db.ExecContext(aiContext(ctx), `INSERT INTO ai_policy_overrides (id,scope_type,scope_id,mode,profile_id,threshold,default_action,category_actions_json,tag_actions_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(scope_type,scope_id) DO UPDATE SET mode=excluded.mode,profile_id=excluded.profile_id,threshold=excluded.threshold,default_action=excluded.default_action,category_actions_json=excluded.category_actions_json,tag_actions_json=excluded.tag_actions_json,updated_at=excluded.updated_at`, value.ID, value.ScopeType, value.ScopeID, nullIfEmpty(string(value.Mode)), nullIfEmpty(value.ProfileID), value.Threshold, nullIfEmpty(string(value.DefaultAction)), string(cats), string(tags), aiTime(value.CreatedAt).Unix(), aiTime(now).Unix())
+	ctx = aiContext(ctx)
+	// A policy digest is part of every Enforce approval. Determine whether the
+	// sparse override actually changes semantic policy before writing it; the
+	// mutation and approval revocation must share one transaction so an
+	// in-flight DROP cannot commit between those two durable operations.
+	var existing AIPolicyOverrideRecord
+	var mode, profile, def, cats, tags string
+	var threshold sql.NullFloat64
+	var created, updated int64
+	err := r.store.db.QueryRowContext(ctx, `SELECT id,scope_type,scope_id,COALESCE(mode,''),COALESCE(profile_id,''),threshold,COALESCE(default_action,''),category_actions_json,tag_actions_json,created_at,updated_at FROM ai_policy_overrides WHERE scope_type=? AND scope_id=?`, value.ScopeType, value.ScopeID).Scan(&existing.ID, &existing.ScopeType, &existing.ScopeID, &mode, &profile, &threshold, &def, &cats, &tags, &created, &updated)
+	policyExists := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	// Creating a sparse row is itself a semantic policy transition: the
+	// effective overlay changes from inheritance/defaults to the values in the
+	// new row (even when the row currently contains only explicit inherit
+	// markers).  Revoke every outstanding approval conservatively on that first
+	// write so an in-flight DROP cannot cross the policy-creation boundary.
+	policyChanged := !policyExists
+	if policyExists {
+		existing.Mode = policy.Mode(mode)
+		existing.ProfileID = profile
+		existing.DefaultAction = policy.Action(def)
+		if threshold.Valid {
+			x := threshold.Float64
+			existing.Threshold = &x
+		}
+		_ = json.Unmarshal([]byte(cats), &existing.CategoryActions)
+		_ = json.Unmarshal([]byte(tags), &existing.TagActions)
+		policyChanged = !policySemanticallyEqual(existing, value)
+	}
+	categoryJSON, _ := json.Marshal(value.CategoryActions)
+	tagJSON, _ := json.Marshal(value.TagActions)
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO ai_policy_overrides (id,scope_type,scope_id,mode,profile_id,threshold,default_action,category_actions_json,tag_actions_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(scope_type,scope_id) DO UPDATE SET mode=excluded.mode,profile_id=excluded.profile_id,threshold=excluded.threshold,default_action=excluded.default_action,category_actions_json=excluded.category_actions_json,tag_actions_json=excluded.tag_actions_json,updated_at=excluded.updated_at`, value.ID, value.ScopeType, value.ScopeID, nullIfEmpty(string(value.Mode)), nullIfEmpty(value.ProfileID), value.Threshold, nullIfEmpty(string(value.DefaultAction)), string(categoryJSON), string(tagJSON), aiTime(value.CreatedAt).Unix(), aiTime(now).Unix()); err != nil {
+		return err
+	}
+	if policyChanged {
+		if err = revokeEnforceApprovalsTx(ctx, tx, aiTime(now), "policy_changed"); err != nil {
+			return err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func profileMapEqual[A comparable, B comparable](left, right map[A]B) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		if right[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func profileSemanticsEqual(left, right policy.Profile) bool {
+	return left.DefaultAction == right.DefaultAction && profileMapEqual(left.CategoryActions, right.CategoryActions) && profileMapEqual(left.TagActions, right.TagActions) && profileMapEqual(left.Safety, right.Safety)
+}
+
+func policySemanticallyEqual(left, right AIPolicyOverrideRecord) bool {
+	if left.ScopeType != right.ScopeType || left.ScopeID != right.ScopeID || left.Mode != right.Mode || left.ProfileID != right.ProfileID || left.DefaultAction != right.DefaultAction || !profileMapEqual(left.CategoryActions, right.CategoryActions) || !profileMapEqual(left.TagActions, right.TagActions) {
+		return false
+	}
+	if left.Threshold == nil || right.Threshold == nil {
+		return left.Threshold == nil && right.Threshold == nil
+	}
+	return *left.Threshold == *right.Threshold
+}
+
+func revokeEnforceApprovalsTx(ctx context.Context, tx *sql.Tx, at time.Time, reason string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE enforce_approvals SET revoked_at=COALESCE(revoked_at,?),reason=? WHERE revoked_at IS NULL`, at.Unix(), reason)
 	return err
 }
 func (r *AIRepository) Policy(ctx context.Context, scopeType, scopeID string) (AIPolicyOverrideRecord, error) {

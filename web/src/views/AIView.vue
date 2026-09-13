@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { command, displayError, get, isUnauthorized, post } from '../api/client'
-import type { AIProvider, AIProfile, AIDecision, AIShadowSummary, AIPolicy, AIEvaluationRun, AIEvaluationCase, Phase5Readiness, Phase5RouteDecision, Phase5Delivery, MediaCacheSummary } from '../api/types'
+import type { AIProvider, AIProfile, AIDecision, AIShadowSummary, AIPolicy, AIEvaluationRun, AIEvaluationCase, Phase5Readiness, Phase5RouteDecision, Phase5Delivery, MediaCacheSummary, Source, Target, SubscriptionItem } from '../api/types'
+import { policyScopeOptions } from '../api/policyScopes'
 import DashboardLayout from '../components/DashboardLayout.vue'
 import { useAuthStore } from '../stores/auth'
 import { useRouter } from 'vue-router'
@@ -34,6 +35,9 @@ const profileForm = ref({
 })
 const policyScope = ref<'global' | 'source' | 'target' | 'subscription'>('global')
 const policyScopeID = ref('')
+const sources = ref<Source[]>([])
+const targets = ref<Target[]>([])
+const subscriptions = ref<SubscriptionItem[]>([])
 const policyLoading = ref(false)
 const readiness = ref<Phase5Readiness | null>(null)
 const emergencyDisabled = ref(false)
@@ -75,6 +79,7 @@ async function load() {
     routeDecisions.value = routeData.items ?? []
     deliveries.value = deliveryData.items ?? []
     mediaSummary.value = mediaData ?? null
+    await loadPolicyScopes()
     error.value = ''
   } catch (err) {
     if (isUnauthorized(err)) {
@@ -86,6 +91,32 @@ async function load() {
     error.value = displayError(err)
   } finally {
     loading.value = false
+  }
+}
+
+const selectedPolicyScopeOptions = computed(() => {
+  if (policyScope.value === 'global') return []
+  return policyScopeOptions(policyScope.value, sources.value, targets.value, subscriptions.value)
+})
+
+async function loadPolicyScopes() {
+  const [sourceResult, targetResult, subscriptionResult] = await Promise.allSettled([
+    get<{ items: Source[] }>('/api/v2/sources'),
+    get<{ items: Target[] }>('/api/v2/targets'),
+    get<{ items: SubscriptionItem[] }>('/api/v2/subscriptions'),
+  ])
+  if (sourceResult.status === 'fulfilled') sources.value = sourceResult.value.items ?? []
+  if (targetResult.status === 'fulfilled') targets.value = targetResult.value.items ?? []
+  if (subscriptionResult.status === 'fulfilled') subscriptions.value = subscriptionResult.value.items ?? []
+}
+
+function onPolicyScopeChange() {
+  policyScopeID.value = ''
+  policy.value = { scope_type: policyScope.value, scope_id: '', mode: 'inherit' }
+  const first = selectedPolicyScopeOptions.value[0]
+  if (first) {
+    policyScopeID.value = first.id
+    void loadPolicyScope()
   }
 }
 
@@ -252,7 +283,7 @@ async function savePolicy() {
   try {
     const path = policyPath()
     if (!path) {
-      error.value = 'Source / Target / Subscription 策略需要填写 scope ID'
+      error.value = '请选择一个真实的 Source / Target / Subscription'
       return
     }
     await command(path, 'PATCH', {
@@ -389,10 +420,16 @@ onMounted(load)
         <template #header><span>AI Policy（System / Global / Source / Target / Subscription）</span></template>
         <el-form label-position="top">
           <div class="case-fields">
-            <el-form-item label="作用域"><el-select v-model="policyScope" @change="loadPolicyScope"><el-option label="Global" value="global" /><el-option label="Source" value="source" /><el-option label="Target" value="target" /><el-option label="Subscription" value="subscription" /></el-select></el-form-item>
-            <el-form-item v-if="policyScope !== 'global'" label="Scope ID"><el-input v-model="policyScopeID" placeholder="输入对应 Source / Target / Subscription ID" @keyup.enter="loadPolicyScope" /></el-form-item>
+            <el-form-item label="作用域"><el-select v-model="policyScope" @change="onPolicyScopeChange"><el-option label="Global" value="global" /><el-option label="Source" value="source" /><el-option label="Target" value="target" /><el-option label="Subscription" value="subscription" /></el-select></el-form-item>
+            <el-form-item v-if="policyScope !== 'global'" label="Scope entity">
+              <el-select v-model="policyScopeID" filterable clearable style="min-width: 320px" :loading="policyLoading" placeholder="选择真实的 Source / Target / Subscription" @change="loadPolicyScope">
+                <el-option v-for="option in selectedPolicyScopeOptions" :key="option.id" :label="option.label" :value="option.id">
+                  <div class="scope-option"><span>{{ option.label }}</span><small>{{ option.detail }}</small></div>
+                </el-option>
+              </el-select>
+            </el-form-item>
           </div>
-          <div v-if="policyScope !== 'global'" class="button-row"><el-button size="small" :loading="policyLoading" @click="loadPolicyScope">加载作用域策略</el-button></div>
+          <div v-if="policyScope !== 'global'" class="button-row"><span v-if="!selectedPolicyScopeOptions.length" class="muted">暂无可用实体；请先在 Sources / Targets 建立真实对象。</span><el-button v-else size="small" :loading="policyLoading" @click="loadPolicyScope">加载作用域策略</el-button></div>
           <el-form-item label="AI mode">
             <el-select v-model="policy.mode">
               <el-option label="Shadow" value="shadow" />

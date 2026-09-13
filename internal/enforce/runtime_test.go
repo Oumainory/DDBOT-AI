@@ -3,6 +3,7 @@ package enforce
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -15,6 +16,35 @@ import (
 	"github.com/Oumainory/DDBOT-AI/internal/provider"
 	"github.com/Oumainory/DDBOT-AI/internal/replay"
 )
+
+func TestEnforceDecisionRecoveryFailureFailsOpen(t *testing.T) {
+	store, err := platformdb.Open(context.Background(), platformdb.Config{Path: filepath.Join(t.TempDir(), "enforce-recovery-failure.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	repo := platformdb.NewPhase5Repository(store)
+	fake := &provider.FakeProvider{ClassifyFunc: func(context.Context, domain.NormalizedEvent) (classifier.Classification, classifier.Usage, error) {
+		t.Fatal("provider call reached while decision recovery is unavailable")
+		return classifier.Classification{}, classifier.Usage{}, nil
+	}}
+	runtime := New(Config{Repository: repo, Provider: fake, DecisionRecoveryError: errors.New("recovery failed")})
+	ready, readyErr := runtime.Ready(context.Background(), enforceRelease())
+	if ready || !errors.Is(readyErr, platformdb.ErrEnforceNotReady) {
+		t.Fatalf("recovery failure readiness = ready=%v err=%v", ready, readyErr)
+	}
+	decisions, evalErr := runtime.Evaluate(context.Background(), enforceEvent(), []Route{{
+		Mode:   policy.ModeEnforce,
+		Policy: policy.PolicyContext{Profile: policy.OfficialGameProfile(), Threshold: .90},
+		Target: Target{ID: "target-recovery", Type: "group", ExternalID: "123", ConnectorID: "connector-recovery"},
+	}})
+	if evalErr != nil || len(decisions) != 1 || decisions[0].Action != policy.RoutePass || decisions[0].Reason != "enforce_recovery_unavailable" {
+		t.Fatalf("recovery failure evaluation = %#v err=%v", decisions, evalErr)
+	}
+	if fake.CallCount() != 0 {
+		t.Fatalf("provider calls = %d, want zero", fake.CallCount())
+	}
+}
 
 func enforceEvent() domain.NormalizedEvent {
 	at := time.Unix(1700000000, 0).UTC()
@@ -181,5 +211,154 @@ func TestEnforceStaleRouteReleaseFailsOpenWithoutProviderCall(t *testing.T) {
 	decisions, err := runtime.Evaluate(context.Background(), enforceEvent(), []Route{{Mode: policy.ModeEnforce, Policy: policy.PolicyContext{Profile: policy.OfficialGameProfile(), Threshold: .90}, Release: stale, Target: Target{ID: "target-1", Type: "group", ExternalID: "123", ConnectorID: "connector-1"}}})
 	if err != nil || len(decisions) != 1 || decisions[0].Action != policy.RoutePass || decisions[0].Reason != "classifier_release_stale" {
 		t.Fatalf("stale result = %#v, err=%v", decisions, err)
+	}
+}
+
+func TestEnforceEmergencyDisableDuringProviderFailsOpen(t *testing.T) {
+	ctx := context.Background()
+	at := time.Unix(1700000000, 0).UTC()
+	store, err := platformdb.Open(ctx, platformdb.Config{Path: filepath.Join(t.TempDir(), "enforce-emergency-race.sqlite"), Now: func() time.Time { return at }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ai := platformdb.NewAIRepository(store)
+	repo := platformdb.NewPhase5Repository(store)
+	release := enforceRelease()
+	release.ID = "release-emergency-race"
+	release.Fingerprint = "fingerprint-emergency-race"
+	release.Active = true
+	if err := ai.SaveRelease(ctx, release); err != nil {
+		t.Fatal(err)
+	}
+	profile := policy.OfficialGameProfile()
+	effective := policy.EffectivePolicy{Mode: policy.ModeEnforce, Threshold: .90, CategoryActions: profile.CategoryActions, TagActions: profile.TagActions}
+	approval := platformdb.EnforceApprovalRecord{ID: "approval-emergency-race", ClassifierReleaseID: release.ID, PolicyDigest: policy.Digest(effective), ProfileDigest: policy.ProfileDigest(profile), ReadinessEvidenceJSON: json.RawMessage(`{"ready":true}`), ApprovedAt: at, ApprovedBy: "admin", CreatedAt: at}
+	if err := repo.SaveEnforceApproval(ctx, approval); err != nil {
+		t.Fatal(err)
+	}
+	providerStarted := make(chan struct{})
+	providerRelease := make(chan struct{})
+	fake := &provider.FakeProvider{ClassifyFunc: func(context.Context, domain.NormalizedEvent) (classifier.Classification, classifier.Usage, error) {
+		close(providerStarted)
+		<-providerRelease
+		return classifier.Classification{SchemaVersion: 1, Category: domain.CategoryPromotion, Importance: domain.ImportanceLow, Confidence: .99}, classifier.Usage{}, nil
+	}}
+	runtime := New(Config{
+		AIRepository: ai,
+		Repository:   repo,
+		Provider:     fake,
+		Readiness:    func(context.Context, classifier.Release) (bool, error) { return true, nil },
+		Now:          func() time.Time { return at.Add(time.Second) },
+	})
+	resultCh := make(chan struct {
+		decisions []Decision
+		err       error
+	}, 1)
+	go func() {
+		decisions, evaluateErr := runtime.Evaluate(ctx, enforceEvent(), []Route{{
+			Mode:           policy.ModeEnforce,
+			Policy:         policy.PolicyContext{Profile: profile, Threshold: .90},
+			Release:        release,
+			SourceID:       "source-1",
+			SubscriptionID: "subscription-1",
+			Target:         Target{ID: "target-1", Type: "group", ExternalID: "123", ConnectorID: "connector-1"},
+		}})
+		resultCh <- struct {
+			decisions []Decision
+			err       error
+		}{decisions: decisions, err: evaluateErr}
+	}()
+	select {
+	case <-providerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("provider did not enter the in-flight boundary")
+	}
+	if err := repo.SetEnforceEmergencyDisabled(ctx, true, at.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	close(providerRelease)
+	select {
+	case result := <-resultCh:
+		if result.err != nil || len(result.decisions) != 1 || result.decisions[0].Action != policy.RoutePass || result.decisions[0].SuppressSend {
+			t.Fatalf("emergency race result = %#v, err=%v", result.decisions, result.err)
+		}
+		if result.decisions[0].RouteDecisionID == "" {
+			t.Fatal("fail-open PASS was not durably recorded")
+		}
+		stored, loadErr := repo.RouteDecision(ctx, result.decisions[0].RouteDecisionID)
+		if loadErr != nil || stored.EffectiveAction != "pass" || stored.EffectiveMode != "shadow" {
+			t.Fatalf("emergency race durable PASS = %#v, err=%v", stored, loadErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not finish after emergency disable")
+	}
+}
+
+func TestEnforceApprovalRevokeDuringProviderFailsOpen(t *testing.T) {
+	ctx := context.Background()
+	at := time.Unix(1700000000, 0).UTC()
+	store, err := platformdb.Open(ctx, platformdb.Config{Path: filepath.Join(t.TempDir(), "enforce-approval-race.sqlite"), Now: func() time.Time { return at }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ai := platformdb.NewAIRepository(store)
+	repo := platformdb.NewPhase5Repository(store)
+	release := enforceRelease()
+	release.ID = "release-approval-race"
+	release.Fingerprint = "fingerprint-approval-race"
+	release.Active = true
+	if err := ai.SaveRelease(ctx, release); err != nil {
+		t.Fatal(err)
+	}
+	profile := policy.OfficialGameProfile()
+	effective := policy.EffectivePolicy{Mode: policy.ModeEnforce, Threshold: .90, CategoryActions: profile.CategoryActions, TagActions: profile.TagActions}
+	approval := platformdb.EnforceApprovalRecord{ID: "approval-revoke-race", ClassifierReleaseID: release.ID, PolicyDigest: policy.Digest(effective), ProfileDigest: policy.ProfileDigest(profile), ReadinessEvidenceJSON: json.RawMessage(`{"ready":true}`), ApprovedAt: at, ApprovedBy: "admin", CreatedAt: at}
+	if err := repo.SaveEnforceApproval(ctx, approval); err != nil {
+		t.Fatal(err)
+	}
+	providerStarted := make(chan struct{})
+	providerRelease := make(chan struct{})
+	fake := &provider.FakeProvider{ClassifyFunc: func(context.Context, domain.NormalizedEvent) (classifier.Classification, classifier.Usage, error) {
+		close(providerStarted)
+		<-providerRelease
+		return classifier.Classification{SchemaVersion: 1, Category: domain.CategoryPromotion, Importance: domain.ImportanceLow, Confidence: .99}, classifier.Usage{}, nil
+	}}
+	runtime := New(Config{
+		AIRepository: ai,
+		Repository:   repo,
+		Provider:     fake,
+		Readiness:    func(context.Context, classifier.Release) (bool, error) { return true, nil },
+		Now:          func() time.Time { return at.Add(time.Second) },
+	})
+	resultCh := make(chan []Decision, 1)
+	go func() {
+		decisions, _ := runtime.Evaluate(ctx, enforceEvent(), []Route{{
+			Mode:           policy.ModeEnforce,
+			Policy:         policy.PolicyContext{Profile: profile, Threshold: .90},
+			Release:        release,
+			SourceID:       "source-1",
+			SubscriptionID: "subscription-1",
+			Target:         Target{ID: "target-1", Type: "group", ExternalID: "123", ConnectorID: "connector-1"},
+		}})
+		resultCh <- decisions
+	}()
+	select {
+	case <-providerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("provider did not enter the in-flight boundary")
+	}
+	if err := repo.RevokeEnforceApprovals(ctx, "operator review", at.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	close(providerRelease)
+	select {
+	case decisions := <-resultCh:
+		if len(decisions) != 1 || decisions[0].Action != policy.RoutePass || decisions[0].SuppressSend {
+			t.Fatalf("approval revoke race result = %#v", decisions)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not finish after approval revoke")
 	}
 }

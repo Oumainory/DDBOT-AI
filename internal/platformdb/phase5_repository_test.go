@@ -3,11 +3,13 @@ package platformdb
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/Oumainory/DDBOT-AI/internal/domain"
+	"github.com/Oumainory/DDBOT-AI/internal/policy"
 )
 
 func phase5Store(t *testing.T) (*Store, *Phase5Repository) {
@@ -71,6 +73,217 @@ func TestPhase5EmergencyFlagPersists(t *testing.T) {
 	}
 	if disabled, err := repo.EnforceEmergencyDisabled(context.Background()); err != nil || !disabled {
 		t.Fatalf("stored emergency = %v, err=%v", disabled, err)
+	}
+}
+
+func TestPhase5PersistDropIfAllowedLinearizesEmergencyAndApproval(t *testing.T) {
+	store, repo := phase5Store(t)
+	ctx := context.Background()
+	at := time.Unix(1700000000, 0).UTC()
+	release := aiTestRelease()
+	release.Active = true
+	if err := NewAIRepository(store).SaveRelease(ctx, release); err != nil {
+		t.Fatal(err)
+	}
+	approval := EnforceApprovalRecord{ID: "approval-linearization-1", ClassifierReleaseID: release.ID, PolicyDigest: "policy-linear-1", ProfileDigest: "profile-linear-1", ReadinessEvidenceJSON: json.RawMessage(`{"ready":true}`), ApprovedAt: at, ApprovedBy: "admin-1", CreatedAt: at}
+	if err := repo.SaveEnforceApproval(ctx, approval); err != nil {
+		t.Fatal(err)
+	}
+	makeDecision := func(id string) (RouteDecisionRecord, ReplayableEventRecord) {
+		decision := phase5Decision(id, "event-"+id, "drop")
+		decision.ClassifierReleaseID = release.ID
+		decision.EnforceApprovalID = approval.ID
+		decision.PolicyDigest = approval.PolicyDigest
+		snapshot := ReplayableEventRecord{ID: "replay-" + id, SchemaVersion: 1, RouteDecisionID: decision.ID, EventID: decision.EventID, SourceID: decision.SourceID, TargetID: decision.TargetID, SnapshotJSON: json.RawMessage(`{"schema_version":1,"route_decision_id":"` + decision.ID + `","event_id":"` + decision.EventID + `"}`), EventType: "dynamic", CreatedAt: at, ExpiresAt: at.Add(time.Hour)}
+		return decision, snapshot
+	}
+	firstDecision, firstSnapshot := makeDecision("linear-first")
+	if err := repo.PersistDropIfAllowed(ctx, firstDecision, firstSnapshot, approval.ID, approval.PolicyDigest, approval.ProfileDigest, at); err != nil {
+		t.Fatalf("drop before disable = %v", err)
+	}
+	if err := repo.SetEnforceEmergencyDisabled(ctx, true, at.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	secondDecision, secondSnapshot := makeDecision("linear-after-disable")
+	if err := repo.PersistDropIfAllowed(ctx, secondDecision, secondSnapshot, approval.ID, approval.PolicyDigest, approval.ProfileDigest, at.Add(2*time.Second)); !errors.Is(err, ErrEmergencyDisabled) {
+		t.Fatalf("drop after durable disable = %v, want %v", err, ErrEmergencyDisabled)
+	}
+	if _, err := repo.RouteDecision(ctx, secondDecision.ID); !errors.Is(err, ErrRouteDecisionNotFound) {
+		t.Fatalf("rejected drop decision = %v, want absent", err)
+	}
+	if err := repo.SetEnforceEmergencyDisabled(ctx, false, at.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RevokeEnforceApprovals(ctx, "operator review", at.Add(4*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	revokedDecision, revokedSnapshot := makeDecision("linear-after-revoke")
+	if err := repo.PersistDropIfAllowed(ctx, revokedDecision, revokedSnapshot, approval.ID, approval.PolicyDigest, approval.ProfileDigest, at.Add(5*time.Second)); !errors.Is(err, ErrApprovalInvalid) {
+		t.Fatalf("drop after approval revoke = %v, want %v", err, ErrApprovalInvalid)
+	}
+}
+
+func TestPhase5PersistDropRejectsReleaseActivationRace(t *testing.T) {
+	store, repo := phase5Store(t)
+	ctx := context.Background()
+	at := time.Unix(1700000000, 0).UTC()
+	oldRelease := aiTestRelease()
+	oldRelease.ID = "release-linear-old"
+	oldRelease.Fingerprint = "fingerprint-linear-old"
+	oldRelease.Active = true
+	if err := NewAIRepository(store).SaveRelease(ctx, oldRelease); err != nil {
+		t.Fatal(err)
+	}
+	approval := EnforceApprovalRecord{ID: "approval-release-race", ClassifierReleaseID: oldRelease.ID, PolicyDigest: "policy-release-race", ProfileDigest: "profile-release-race", ReadinessEvidenceJSON: json.RawMessage(`{"ready":true}`), ApprovedAt: at, ApprovedBy: "admin-1", CreatedAt: at}
+	if err := repo.SaveEnforceApproval(ctx, approval); err != nil {
+		t.Fatal(err)
+	}
+	newRelease := aiTestRelease()
+	newRelease.ID = "release-linear-new"
+	newRelease.Fingerprint = "fingerprint-linear-new"
+	newRelease.Active = true
+	if err := NewAIRepository(store).SaveRelease(ctx, newRelease); err != nil {
+		t.Fatal(err)
+	}
+	decision := phase5Decision("route-release-race", "event-release-race", "drop")
+	decision.ClassifierReleaseID = oldRelease.ID
+	decision.EnforceApprovalID = approval.ID
+	decision.PolicyDigest = approval.PolicyDigest
+	snapshot := ReplayableEventRecord{ID: "replay-release-race", SchemaVersion: 1, RouteDecisionID: decision.ID, EventID: decision.EventID, SourceID: decision.SourceID, TargetID: decision.TargetID, SnapshotJSON: json.RawMessage(`{"schema_version":1,"route_decision_id":"route-release-race","event_id":"event-release-race"}`), EventType: "dynamic", CreatedAt: at, ExpiresAt: at.Add(time.Hour)}
+	if err := repo.PersistDropIfAllowed(ctx, decision, snapshot, approval.ID, approval.PolicyDigest, approval.ProfileDigest, at.Add(time.Second)); !errors.Is(err, ErrApprovalInvalid) {
+		t.Fatalf("drop after release activation = %v, want %v", err, ErrApprovalInvalid)
+	}
+	if _, err := repo.RouteDecision(ctx, decision.ID); !errors.Is(err, ErrRouteDecisionNotFound) {
+		t.Fatalf("route decision after release race = %v, want absent", err)
+	}
+}
+
+func TestPhase5PolicyMutationRevokesInFlightApproval(t *testing.T) {
+	store, repo := phase5Store(t)
+	ctx := context.Background()
+	at := time.Unix(1700000000, 0).UTC()
+	release := aiTestRelease()
+	release.ID = "release-policy-mutation"
+	release.Fingerprint = "fingerprint-policy-mutation"
+	release.Active = true
+	if err := NewAIRepository(store).SaveRelease(ctx, release); err != nil {
+		t.Fatal(err)
+	}
+	approval := EnforceApprovalRecord{ID: "approval-policy-mutation", ClassifierReleaseID: release.ID, PolicyDigest: "policy-before", ProfileDigest: "profile-before", ReadinessEvidenceJSON: json.RawMessage(`{"ready":true}`), ApprovedAt: at, ApprovedBy: "admin-1", CreatedAt: at}
+	if err := repo.SaveEnforceApproval(ctx, approval); err != nil {
+		t.Fatal(err)
+	}
+	aiRepo := NewAIRepository(store)
+	if err := aiRepo.SavePolicy(ctx, AIPolicyOverrideRecord{ID: "policy-row", ScopeType: "global", ScopeID: "", Mode: "enforce", DefaultAction: "pass", CreatedAt: at}, at); err != nil {
+		t.Fatal(err)
+	}
+	if err := aiRepo.SavePolicy(ctx, AIPolicyOverrideRecord{ID: "policy-row", ScopeType: "global", ScopeID: "", Mode: "enforce", DefaultAction: "drop", CreatedAt: at}, at.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	decision := phase5Decision("route-policy-mutation", "event-policy-mutation", "drop")
+	decision.ClassifierReleaseID = release.ID
+	decision.EnforceApprovalID = approval.ID
+	decision.PolicyDigest = approval.PolicyDigest
+	snapshot := ReplayableEventRecord{ID: "replay-policy-mutation", SchemaVersion: 1, RouteDecisionID: decision.ID, EventID: decision.EventID, SourceID: decision.SourceID, TargetID: decision.TargetID, SnapshotJSON: json.RawMessage(`{"schema_version":1,"route_decision_id":"route-policy-mutation","event_id":"event-policy-mutation"}`), EventType: "dynamic", CreatedAt: at, ExpiresAt: at.Add(time.Hour)}
+	if err := repo.PersistDropIfAllowed(ctx, decision, snapshot, approval.ID, approval.PolicyDigest, approval.ProfileDigest, at.Add(2*time.Second)); !errors.Is(err, ErrApprovalInvalid) {
+		t.Fatalf("drop after policy mutation = %v, want %v", err, ErrApprovalInvalid)
+	}
+}
+
+func TestPhase5PolicyCreationRevokesInFlightApproval(t *testing.T) {
+	store, repo := phase5Store(t)
+	ctx := context.Background()
+	at := time.Unix(1700000000, 0).UTC()
+	release := aiTestRelease()
+	release.ID = "release-policy-creation"
+	release.Fingerprint = "fingerprint-policy-creation"
+	release.Active = true
+	if err := NewAIRepository(store).SaveRelease(ctx, release); err != nil {
+		t.Fatal(err)
+	}
+	approval := EnforceApprovalRecord{ID: "approval-policy-creation", ClassifierReleaseID: release.ID, PolicyDigest: "policy-before-create", ProfileDigest: "profile-before-create", ReadinessEvidenceJSON: json.RawMessage(`{"ready":true}`), ApprovedAt: at, ApprovedBy: "admin-1", CreatedAt: at}
+	if err := repo.SaveEnforceApproval(ctx, approval); err != nil {
+		t.Fatal(err)
+	}
+	// Adding the first sparse policy row changes the effective overlay from
+	// inheritance/defaults. It must revoke the approval in the same write
+	// transaction, even before a subsequent edit is made.
+	if err := NewAIRepository(store).SavePolicy(ctx, AIPolicyOverrideRecord{ID: "policy-created", ScopeType: "global", ScopeID: "", Mode: policy.ModeEnforce, DefaultAction: policy.ActionPass, CreatedAt: at}, at.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	decision := phase5Decision("route-policy-creation", "event-policy-creation", "drop")
+	decision.ClassifierReleaseID = release.ID
+	decision.EnforceApprovalID = approval.ID
+	decision.PolicyDigest = approval.PolicyDigest
+	snapshot := ReplayableEventRecord{ID: "replay-policy-creation", SchemaVersion: 1, RouteDecisionID: decision.ID, EventID: decision.EventID, SourceID: decision.SourceID, TargetID: decision.TargetID, SnapshotJSON: json.RawMessage(`{"schema_version":1,"route_decision_id":"route-policy-creation","event_id":"event-policy-creation"}`), EventType: "dynamic", CreatedAt: at, ExpiresAt: at.Add(time.Hour)}
+	if err := repo.PersistDropIfAllowed(ctx, decision, snapshot, approval.ID, approval.PolicyDigest, approval.ProfileDigest, at.Add(2*time.Second)); !errors.Is(err, ErrApprovalInvalid) {
+		t.Fatalf("drop after policy creation = %v, want %v", err, ErrApprovalInvalid)
+	}
+}
+
+func TestPhase5ProfileMutationRevokesInFlightApproval(t *testing.T) {
+	store, repo := phase5Store(t)
+	ctx := context.Background()
+	at := time.Unix(1700000000, 0).UTC()
+	release := aiTestRelease()
+	release.ID = "release-profile-mutation"
+	release.Fingerprint = "fingerprint-profile-mutation"
+	release.Active = true
+	if err := NewAIRepository(store).SaveRelease(ctx, release); err != nil {
+		t.Fatal(err)
+	}
+	approval := EnforceApprovalRecord{ID: "approval-profile-mutation", ClassifierReleaseID: release.ID, PolicyDigest: "policy-profile-before", ProfileDigest: "profile-before", ReadinessEvidenceJSON: json.RawMessage(`{"ready":true}`), ApprovedAt: at, ApprovedBy: "admin-1", CreatedAt: at}
+	if err := repo.SaveEnforceApproval(ctx, approval); err != nil {
+		t.Fatal(err)
+	}
+	aiRepo := NewAIRepository(store)
+	profile := policy.Profile{ID: "profile-mutation", Name: "Profile", DefaultAction: policy.ActionPass}
+	if err := aiRepo.SaveProfile(ctx, profile, at, at); err != nil {
+		t.Fatal(err)
+	}
+	profile.DefaultAction = policy.ActionDrop
+	if err := aiRepo.SaveProfile(ctx, profile, at, at.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	decision := phase5Decision("route-profile-mutation", "event-profile-mutation", "drop")
+	decision.ClassifierReleaseID = release.ID
+	decision.EnforceApprovalID = approval.ID
+	decision.PolicyDigest = approval.PolicyDigest
+	snapshot := ReplayableEventRecord{ID: "replay-profile-mutation", SchemaVersion: 1, RouteDecisionID: decision.ID, EventID: decision.EventID, SourceID: decision.SourceID, TargetID: decision.TargetID, SnapshotJSON: json.RawMessage(`{"schema_version":1,"route_decision_id":"route-profile-mutation","event_id":"event-profile-mutation"}`), EventType: "dynamic", CreatedAt: at, ExpiresAt: at.Add(time.Hour)}
+	if err := repo.PersistDropIfAllowed(ctx, decision, snapshot, approval.ID, approval.PolicyDigest, approval.ProfileDigest, at.Add(2*time.Second)); !errors.Is(err, ErrApprovalInvalid) {
+		t.Fatalf("drop after profile mutation = %v, want %v", err, ErrApprovalInvalid)
+	}
+}
+
+func TestPhase5ProfileDeletionRevokesInFlightApproval(t *testing.T) {
+	store, repo := phase5Store(t)
+	ctx := context.Background()
+	at := time.Unix(1700000000, 0).UTC()
+	release := aiTestRelease()
+	release.ID = "release-profile-deletion"
+	release.Fingerprint = "fingerprint-profile-deletion"
+	release.Active = true
+	if err := NewAIRepository(store).SaveRelease(ctx, release); err != nil {
+		t.Fatal(err)
+	}
+	approval := EnforceApprovalRecord{ID: "approval-profile-deletion", ClassifierReleaseID: release.ID, PolicyDigest: "policy-profile-deletion", ProfileDigest: "profile-profile-deletion", ReadinessEvidenceJSON: json.RawMessage(`{"ready":true}`), ApprovedAt: at, ApprovedBy: "admin-1", CreatedAt: at}
+	if err := repo.SaveEnforceApproval(ctx, approval); err != nil {
+		t.Fatal(err)
+	}
+	aiRepo := NewAIRepository(store)
+	if err := aiRepo.SaveProfile(ctx, policy.Profile{ID: "profile-delete", Name: "Delete me", DefaultAction: policy.ActionPass}, at, at); err != nil {
+		t.Fatal(err)
+	}
+	if err := aiRepo.DeleteProfile(ctx, "profile-delete"); err != nil {
+		t.Fatal(err)
+	}
+	decision := phase5Decision("route-profile-deletion", "event-profile-deletion", "drop")
+	decision.ClassifierReleaseID = release.ID
+	decision.EnforceApprovalID = approval.ID
+	decision.PolicyDigest = approval.PolicyDigest
+	snapshot := ReplayableEventRecord{ID: "replay-profile-deletion", SchemaVersion: 1, RouteDecisionID: decision.ID, EventID: decision.EventID, SourceID: decision.SourceID, TargetID: decision.TargetID, SnapshotJSON: json.RawMessage(`{"schema_version":1,"route_decision_id":"route-profile-deletion","event_id":"event-profile-deletion"}`), EventType: "dynamic", CreatedAt: at, ExpiresAt: at.Add(time.Hour)}
+	if err := repo.PersistDropIfAllowed(ctx, decision, snapshot, approval.ID, approval.PolicyDigest, approval.ProfileDigest, at.Add(time.Second)); !errors.Is(err, ErrApprovalInvalid) {
+		t.Fatalf("drop after profile deletion = %v, want %v", err, ErrApprovalInvalid)
 	}
 }
 

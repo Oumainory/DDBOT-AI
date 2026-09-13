@@ -18,6 +18,7 @@ permissions:
 env:
   GO_VERSION: '1.26.2'
   RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag || 'v1.0.0-rc1' }}
+  SOURCE_REF: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag || 'v1.0.0-rc1' }}
   FFMPEG_METADATA: release/ffmpeg.json
   # Repository variables remain optional compatibility wiring. When present,
   # the pin job requires an exact match with the committed metadata; they can
@@ -53,6 +54,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ env.SOURCE_REF }}
+
+      - name: Assert checked-out release ref
+        shell: bash
+        run: bash release/verify-ref.sh "$SOURCE_REF"
 
       - name: Verify committed pin and upstream checksum manifest
         id: metadata
@@ -152,6 +158,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ env.SOURCE_REF }}
+
+      - name: Assert checked-out release ref
+        shell: bash
+        run: bash release/verify-ref.sh "$SOURCE_REF"
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -168,6 +179,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          source_commit="$(git rev-parse HEAD)"
           meta="$FFMPEG_METADATA"
           target="$GOOS/$GOARCH"
           release_tag="$RELEASE_TAG"
@@ -176,12 +188,12 @@ jobs:
           suffix=""
           archive_ext="tar.gz"
           if [ "$GOOS" = "windows" ]; then suffix=".exe"; archive_ext="zip"; fi
-          go build -trimpath -ldflags "-s -w -X github.com/Oumainory/DDBOT-AI/lsp.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ) -X github.com/Oumainory/DDBOT-AI/lsp.CommitId=${GITHUB_SHA} -X github.com/Oumainory/DDBOT-AI/internal/buildinfo.Version=${release_tag} -X github.com/Oumainory/DDBOT-AI/internal/buildinfo.Commit=${GITHUB_SHA}" -o "$root/bin/ddbot-ai${suffix}" ./cmd
+          go build -trimpath -ldflags "-s -w -X github.com/Oumainory/DDBOT-AI/lsp.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ) -X github.com/Oumainory/DDBOT-AI/lsp.CommitId=${source_commit} -X github.com/Oumainory/DDBOT-AI/internal/buildinfo.Version=${release_tag} -X github.com/Oumainory/DDBOT-AI/internal/buildinfo.Commit=${source_commit}" -o "$root/bin/ddbot-ai${suffix}" ./cmd
           cp README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md "$root/"
           cat > "$root/BUILD-METADATA.txt" <<EOF
           product=DDBOT-AI
           version=${release_tag}
-          commit=${GITHUB_SHA}
+          commit=${source_commit}
           source=https://github.com/Oumainory/DDBOT-AI
           license=AGPL-3.0
           flavor=${FLAVOR}
@@ -221,6 +233,7 @@ jobs:
             install -m 0755 "$ffmpeg_path" "$root/bin/$(basename "$ffmpeg_path")"
             if [ "$target" = "linux/amd64" ]; then
               version_check="$("$root/bin/$(basename "$ffmpeg_path")" -version 2>&1 | head -n 1)"
+              echo "$version_check" | grep -Eiq 'n9\.0\.1|ad500d59cb'
             else
               version_check="$(strings "$ffmpeg_path" | grep -E -m1 'n9\.0\.1|ad500d59cb' || true)"
               test -n "$version_check"
@@ -276,6 +289,18 @@ jobs:
     steps:
       - name: Check out release commit
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.SOURCE_REF }}
+
+      - name: Assert checked-out release ref
+        shell: bash
+        run: bash release/verify-ref.sh "$SOURCE_REF"
+
+      - name: Record checked-out commit
+        id: source
+        shell: bash
+        run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build Full image locally
         uses: docker/build-push-action@v6
@@ -285,7 +310,7 @@ jobs:
           tags: ghcr.io/oumainory/ddbot-ai:${{ env.RELEASE_TAG }}
           build-args: |
             RELEASE_VERSION=${{ env.RELEASE_TAG }}
-            RELEASE_COMMIT=${{ github.sha }}
+            RELEASE_COMMIT=${{ steps.source.outputs.commit }}
             FFMPEG_PROVIDER=${{ needs.pin.outputs.provider }}
             FFMPEG_PROVIDER_RELEASE=${{ needs.pin.outputs.provider_release }}
             FFMPEG_VERSION=${{ needs.pin.outputs.version }}

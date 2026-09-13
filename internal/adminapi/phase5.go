@@ -689,6 +689,8 @@ func (s *Server) phase5Error(err error) (int, string, string) {
 		return http.StatusConflict, "enforce_emergency_disabled", "Enforce is emergency-disabled"
 	case errors.Is(err, platformdb.ErrPhase5Unavailable):
 		return http.StatusServiceUnavailable, "phase5_unavailable", "Phase 5 storage is unavailable"
+	case errors.Is(err, platformdb.ErrIdempotencyUnavailable):
+		return http.StatusServiceUnavailable, "phase5_unavailable", "Phase 5 storage is unavailable"
 	default:
 		return http.StatusBadRequest, "invalid_argument", "Phase 5 request is invalid"
 	}

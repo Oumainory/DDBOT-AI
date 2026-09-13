@@ -40,6 +40,19 @@ type Record struct {
 	ExpiresAt       time.Time         `json:"expires_at"`
 }
 
+// Store is the small persistence boundary shared by the Admin API and Replay
+// service. MemoryStore remains useful for isolated tests; production wires a
+// SQLite implementation that satisfies the same atomic claim/complete
+// contract.
+type Store interface {
+	Begin(principal, key string, fingerprint Fingerprint, now time.Time) (Record, Outcome, error)
+	BeginCommand(principal, key, commandType string, fingerprint Fingerprint, now time.Time) (Record, Outcome, error)
+	Complete(principal, key string, fingerprint Fingerprint, statusCode int, headers map[string]string, body []byte, now time.Time) (Record, error)
+	CompleteCommand(principal, key, commandType string, fingerprint Fingerprint, statusCode int, headers map[string]string, body []byte, now time.Time) (Record, error)
+	Lookup(principal, key string, now time.Time) (Record, bool, error)
+	Prune(now time.Time) int
+}
+
 func (r Record) Completed() bool {
 	if r.ExecutionStatus != "" {
 		return r.ExecutionStatus == ExecutionCompleted
@@ -187,7 +200,7 @@ func (s *MemoryStore) complete(principal, key, commandType string, fingerprint F
 		return Record{}, errors.New("idempotency: invalid response status")
 	}
 	record.StatusCode = statusCode
-	record.Headers = cloneHeaders(headers)
+	record.Headers = SanitizeHeaders(headers)
 	record.Body = append([]byte(nil), body...)
 	record.ExecutionStatus = ExecutionCompleted
 	completedAt := now
@@ -262,4 +275,31 @@ func cloneHeaders(headers map[string]string) map[string]string {
 		clone[key] = value
 	}
 	return clone
+}
+
+// SanitizeHeaders returns the deliberately small response-header allowlist
+// that may be replayed from durable idempotency records. Authentication and
+// session material (for example Set-Cookie and Authorization) is never
+// persisted or replayed.
+func SanitizeHeaders(headers map[string]string) map[string]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	allowed := map[string]string{
+		"content-type":           "Content-Type",
+		"location":               "Location",
+		"cache-control":          "Cache-Control",
+		"x-content-type-options": "X-Content-Type-Options",
+		"referrer-policy":        "Referrer-Policy",
+	}
+	result := make(map[string]string)
+	for key, value := range headers {
+		if canonical, ok := allowed[strings.ToLower(strings.TrimSpace(key))]; ok {
+			result[canonical] = value
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }

@@ -222,3 +222,53 @@ func TestHeldDeliveryPersistsAndUnknownIsTerminal(t *testing.T) {
 		t.Fatalf("unknown hold resent calls=%d", sender.calls)
 	}
 }
+
+func TestMigrationHoldFinalStateCheckPreventsStaleHold(t *testing.T) {
+	ctx := context.Background()
+	c, d, repo, old, next := coordinatorFixture(t)
+	m, err := c.Create(ctx, old.ID, next.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.RebuildProjection(ctx, []domain.LegacySubscription{{
+		Platform: "bilibili", ExternalID: "source-stale", DisplayName: "source", SubscriptionType: "dynamic",
+		TargetType: string(domain.TargetGroup), TargetExternalID: "321", TargetDisplayName: "old", Enabled: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	targets, err := d.ListTargets(ctx)
+	if err != nil || len(targets) != 1 {
+		t.Fatalf("targets=%#v err=%v", targets, err)
+	}
+	target := targets[0]
+	if err := repo.UpdateMigration(ctx, m.MigrationID, platformdb.MigrationPreparing, "targets_discovered", "", time.Unix(1700000000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateMigration(ctx, m.MigrationID, platformdb.MigrationPreflightReady, "preflight_validated", "", time.Unix(1700000000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateMigration(ctx, m.MigrationID, platformdb.MigrationCommitting, "hold_active", "", time.Unix(1700000000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	payload := deliverysnapshot.Payload{
+		SchemaVersion: 1, DeliveryID: "stale-delivery", MigrationID: m.MigrationID, EventID: "stale-event", RouteID: "stale-route",
+		RouteSnapshot: json.RawMessage(`{"connector_id":"old"}`),
+		LogicalTarget: deliverysnapshot.LogicalTarget{TargetID: target.ID, TargetType: string(target.TargetType), ExternalID: target.ExternalID},
+		Message:       deliverysnapshot.MessageSnapshot{SchemaVersion: 1, Segments: []deliverysnapshot.Segment{{Type: "text", Data: map[string]any{"text": "hello"}}}},
+	}
+	// This models an eligibility read that succeeded, followed by a durable
+	// migration transition before the hold repository boundary was reached.
+	if err := repo.UpdateMigration(ctx, m.MigrationID, platformdb.MigrationFailed, "hold_persistence_failed", "", time.Unix(1700000001, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.PutHold(ctx, m.MigrationID, payload, time.Unix(1700000001, 0)); !errors.Is(err, platformdb.ErrMigrationInvalidState) {
+		t.Fatalf("stale hold error=%v", err)
+	}
+	holds, err := repo.Holds(ctx, m.MigrationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(holds) != 0 {
+		t.Fatalf("stale hold persisted: %#v", holds)
+	}
+}

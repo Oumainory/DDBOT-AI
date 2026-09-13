@@ -49,7 +49,7 @@ type Config struct {
 	ObservationRecorder   *observation.Recorder
 	DomainRepository      *platformdb.DomainRepository
 	LegacySubscriptions   *subscription.Service
-	Idempotency           *idempotency.MemoryStore
+	Idempotency           idempotency.Store
 	MigrationRepository   *platformdb.MigrationRepository
 	MigrationCoordinator  *migration.Coordinator
 	PairingService        *pairing.Service
@@ -81,7 +81,7 @@ type Server struct {
 	observationRecorder   *observation.Recorder
 	domainRepository      *platformdb.DomainRepository
 	legacySubscriptions   *subscription.Service
-	idempotency           *idempotency.MemoryStore
+	idempotency           idempotency.Store
 	migrationRepository   *platformdb.MigrationRepository
 	migrationCoordinator  *migration.Coordinator
 	pairingService        *pairing.Service
@@ -171,7 +171,11 @@ func NewServer(config Config) (*Server, error) {
 		config.LegacySubscriptions = subscription.NewService()
 	}
 	if config.Idempotency == nil {
-		config.Idempotency = idempotency.NewMemoryStore(idempotency.DefaultRetention)
+		// A production server must never silently fall back to a process-local
+		// claim/result store. The bootstrap owner supplies the durable SQLite
+		// implementation; a missing backend is represented explicitly as
+		// unavailable and therefore fails closed at the domain-command boundary.
+		config.Idempotency = platformdb.NewIdempotencyStore(nil)
 	}
 	if config.BilibiliResolver == nil {
 		config.BilibiliResolver = discovery.StaticBilibiliResolver{}

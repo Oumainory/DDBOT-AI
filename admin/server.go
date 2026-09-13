@@ -436,6 +436,12 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 	var enforceRuntime *enforce.Runtime
 	var replayService *replay.Service
 	var mediaCache *mediacache.Cache
+	var decisionRecoveryErr error
+	// Keep the production command boundary durable even while the optional
+	// platform database is unavailable. NewIdempotencyStore(nil) returns an
+	// explicitly unavailable backend; it must not silently degrade to the
+	// process-local MemoryStore used by isolated unit tests.
+	var durableIdempotency idempotency.Store = platformdb.NewIdempotencyStore(store)
 	legacySubscriptions := subscription.NewService()
 	if store != nil {
 		observationRepository = platformdb.NewObservationRepository(store)
@@ -456,7 +462,20 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 		})
 		probe.SetMigrationRepository(migrationRepository)
 		aiRepository = platformdb.NewAIRepository(store)
+		// Decision recovery is a startup invariant for ENFORCE.  Claims whose
+		// provider call never began may resume once; a durable call_started
+		// marker is converted to uncertain_call/PASS and is never invoked again.
+		// Recovery failure is warning-only so the Legacy core remains fail-open;
+		// the runtime will stay degraded until the repository is usable.
+		if recoveryErr := aiRepository.RecoverDecisions(context.Background(), time.Now().UTC()); recoveryErr != nil {
+			decisionRecoveryErr = recoveryErr
+			logrus.WithError(recoveryErr).Warn("DDBOT-AI enforce decision recovery unavailable")
+		}
 		phase5Repository = platformdb.NewPhase5Repository(store)
+		// Admin commands and Replay share one durable claim/result backend. A
+		// process restart must retain in_progress/completed records so an
+		// externally visible command is never executed a second time merely
+		// because the process was replaced.
 		// A process restart is an explicit delivery boundary.  Any record that
 		// was left in sending is made terminal before new traffic is observed;
 		// this is a warning-only recovery step and never blocks Legacy startup.
@@ -494,12 +513,13 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 		// It remains fail-open whenever the durable repository, provider, release,
 		// readiness evidence, or target identity is unavailable.
 		enforceRuntime = enforce.New(enforce.Config{
-			AIRepository:   aiRepository,
-			Repository:     phase5Repository,
-			Provider:       aiProvider,
-			QueueCapacity:  64,
-			MaxConcurrency: 2,
-			Timeout:        15 * time.Second,
+			AIRepository:          aiRepository,
+			Repository:            phase5Repository,
+			Provider:              aiProvider,
+			DecisionRecoveryError: decisionRecoveryErr,
+			QueueCapacity:         64,
+			MaxConcurrency:        2,
+			Timeout:               15 * time.Second,
 			CacheMedia: func(ctx context.Context, snapshot replay.Snapshot) error {
 				if mediaCache == nil {
 					return mediacache.ErrCacheUnavailable
@@ -529,7 +549,7 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 		})
 		replayService = replay.NewService(replay.Config{
 			Repository:  phase5Repository,
-			Idempotency: idempotency.NewMemoryStore(idempotency.DefaultRetention),
+			Idempotency: durableIdempotency,
 			ResolveTarget: func(ctx context.Context, identity replay.TargetIdentity) (replay.TargetIdentity, error) {
 				if domainRepository == nil || strings.TrimSpace(identity.TargetID) == "" {
 					return replay.TargetIdentity{}, platformdb.ErrTargetNotFound
@@ -672,37 +692,22 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 				if observedErr != nil {
 					return
 				}
-				// Resolve the frozen System → Global → Source → Target overlay at
-				// schedule time. Missing sparse rows simply inherit the built-in
-				// profile/default Shadow mode; no resolved copy is written back.
-				modeLayers := []policy.ModeLayer{{Name: "system", Mode: policy.ModeShadow}}
-				baseProfile := policy.OfficialGameProfile()
-				policyLayers := []policy.PolicyLayer{{Name: "system", Profile: &baseProfile}}
-				loadLayer := func(scopeType, scopeID, name string) {
-					if scopeType != "global" && strings.TrimSpace(scopeID) == "" {
-						return
+				// Resolve the same durable System → Global → Source → Target →
+				// Subscription identity chain used by the synchronous ENFORCE
+				// bridge. A missing/ambiguous entity is a safe Shadow diagnostic,
+				// never an opportunity to apply an external-id policy scope.
+				resolvedSource, sourceErr := domainRepository.SourceByPlatformExternal(ctx, observed.Platform, observed.SourceExternalID)
+				resolvedTarget, targetOK := targetForLegacyGroup(ctx, domainRepository, route.DestinationExternalID)
+				projection, projectionErr := domainRepository.ActiveProjectionForSourceTarget(ctx, resolvedSource.ID, resolvedTarget.ID)
+				mode := policy.ResolveAIMode(policy.ModeLayer{Name: "system", Mode: policy.ModeShadow})
+				policyContext := policy.PolicyContext{Profile: policy.OfficialGameProfile(), Threshold: .90}
+				if sourceErr == nil && targetOK && projectionErr == nil {
+					resolvedMode, resolvedPolicy, layersOK := resolvePhase5Layers(ctx, aiRepository, resolvedSource.ID, resolvedTarget.ID, projection.ID)
+					if layersOK {
+						mode = policy.ResolveAIMode(policy.ModeLayer{Name: "resolved", Mode: resolvedMode})
+						policyContext = resolvedPolicy
 					}
-					override, policyErr := aiRepository.Policy(ctx, scopeType, scopeID)
-					if policyErr != nil {
-						return
-					}
-					if override.Mode != "" && override.Mode != policy.ModeInherit {
-						modeLayers = append(modeLayers, policy.ModeLayer{Name: name, Mode: override.Mode})
-					}
-					layer := policy.PolicyLayer{Name: name, Threshold: override.Threshold, DefaultAction: override.DefaultAction, CategoryActions: override.CategoryActions, TagActions: override.TagActions}
-					if override.ProfileID != "" {
-						if profile, profileErr := aiRepository.Profile(ctx, override.ProfileID); profileErr == nil {
-							layer.Profile = &profile
-						}
-					}
-					policyLayers = append(policyLayers, layer)
 				}
-				loadLayer("global", "", "global")
-				loadLayer("source", observed.SourceExternalID, "source")
-				loadLayer("target", route.DestinationExternalID, "target")
-				mode := policy.ResolveAIMode(modeLayers...)
-				resolvedPolicy := policy.ResolvePolicyContext(policyLayers...)
-				policyContext := resolvedPolicy
 				eligible := strings.EqualFold(route.Outcome, "pass")
 				// ENFORCE is evaluated synchronously by the pre-Messenger hook. Do
 				// not also schedule a Shadow call for that route, otherwise one
@@ -773,7 +778,7 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 		PairingService:        pairingService,
 		PairingVerifier:       ddbottelegram.PairingVerifier{},
 		LegacySubscriptions:   legacySubscriptions,
-		Idempotency:           idempotency.NewMemoryStore(idempotency.DefaultRetention),
+		Idempotency:           durableIdempotency,
 		AIRepository:          aiRepository,
 		SecretStore:           secretService,
 		AIProvider:            aiProvider,

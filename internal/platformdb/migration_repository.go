@@ -523,12 +523,69 @@ func (r *MigrationRepository) PutHold(ctx context.Context, migrationID string, p
 	if payload.HeldAt == 0 {
 		payload.HeldAt = stamp
 	}
+	// Older callers may populate only the explicit snapshot field. Normalize
+	// both durable representations before persisting so the relational columns
+	// and the process-independent payload carry the same logical target.
+	if strings.TrimSpace(payload.LogicalTarget.TargetID) == "" {
+		payload.LogicalTarget = payload.LogicalTargetSnapshot
+	}
+	if strings.TrimSpace(payload.LogicalTargetSnapshot.TargetID) == "" {
+		payload.LogicalTargetSnapshot = payload.LogicalTarget
+	}
 	payloadJSON, err := payload.Marshal()
 	if err != nil {
 		return err
 	}
+	queryContext := domainContext(ctx)
+	// The coordinator performs a cheap eligibility read before serializing a
+	// message. This repository boundary is the final authorization check: it
+	// re-reads migration state and target ownership in the same transaction that
+	// inserts the hold. If the migration finishes (or loses the target) between
+	// those reads, no hold is written.
+	tx, err := r.store.db.BeginTx(queryContext, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	var oldConnectorID string
+	var state MigrationState
+	var affectedTargetIDs string
+	if err := tx.QueryRowContext(queryContext, `SELECT old_connector_id,state,COALESCE(affected_target_ids_json,'[]') FROM connector_migrations WHERE migration_id=?`, migrationID).Scan(&oldConnectorID, &state, &affectedTargetIDs); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrMigrationNotFound
+		}
+		return err
+	}
+	if state != MigrationCommitting {
+		return ErrMigrationInvalidState
+	}
+	target := payload.LogicalTarget
+	var targetConnectorID, targetStatus string
+	if err := tx.QueryRowContext(queryContext, `SELECT connector_id,status FROM targets WHERE id=?`, target.TargetID).Scan(&targetConnectorID, &targetStatus); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrMigrationTargetUnavailable
+		}
+		return err
+	}
+	if targetConnectorID != oldConnectorID || targetStatus != domain.TargetResolved {
+		return ErrMigrationTargetUnavailable
+	}
+	if !affectedTargetContains(affectedTargetIDs, target.TargetID) {
+		var mappingExists int
+		if err := tx.QueryRowContext(queryContext, `SELECT EXISTS(SELECT 1 FROM connector_migration_mappings WHERE migration_id=? AND old_target_id=? AND old_connector_id=?)`, migrationID, target.TargetID, oldConnectorID).Scan(&mappingExists); err != nil {
+			return err
+		}
+		if mappingExists != 1 {
+			return ErrMigrationTargetUnavailable
+		}
+	}
 	var existingMigration, existingPayload string
-	lookupErr := r.store.db.QueryRowContext(domainContext(ctx), "SELECT migration_id,COALESCE(payload_json,'') FROM delivery_migration_holds WHERE delivery_id=?", payload.DeliveryID).Scan(&existingMigration, &existingPayload)
+	lookupErr := tx.QueryRowContext(queryContext, "SELECT migration_id,COALESCE(payload_json,'') FROM delivery_migration_holds WHERE delivery_id=?", payload.DeliveryID).Scan(&existingMigration, &existingPayload)
 	if lookupErr == nil {
 		if existingMigration == migrationID {
 			// Repeating the same hold is idempotent only when it carries the
@@ -551,11 +608,31 @@ func (r *MigrationRepository) PutHold(ctx context.Context, migrationID string, p
 	if !errors.Is(lookupErr, sql.ErrNoRows) {
 		return lookupErr
 	}
-	_, err = r.store.db.ExecContext(domainContext(ctx), `INSERT INTO delivery_migration_holds (delivery_id,migration_id,event_id,route_decision_id,route_snapshot_json,logical_target_json,message_snapshot_json,payload_schema_version,status,created_at,payload_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, payload.DeliveryID, migrationID, payload.EventID, payload.RouteID, string(payload.RouteSnapshot), mustJSON(payload.LogicalTarget), mustJSON(payload.Message), payload.SchemaVersion, "migration_held", stamp, string(payloadJSON))
+	_, err = tx.ExecContext(queryContext, `INSERT INTO delivery_migration_holds (delivery_id,migration_id,event_id,route_decision_id,route_snapshot_json,logical_target_json,message_snapshot_json,payload_schema_version,status,created_at,payload_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)`, payload.DeliveryID, migrationID, payload.EventID, payload.RouteID, string(payload.RouteSnapshot), mustJSON(payload.LogicalTarget), mustJSON(payload.Message), payload.SchemaVersion, "migration_held", stamp, string(payloadJSON))
 	if err != nil && strings.Contains(strings.ToLower(err.Error()), "unique") {
 		return ErrMigrationHoldConflict
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func affectedTargetContains(encoded, targetID string) bool {
+	var values []string
+	if json.Unmarshal([]byte(encoded), &values) != nil {
+		return false
+	}
+	for _, value := range values {
+		if value == targetID {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *MigrationRepository) Holds(ctx context.Context, migrationID string) ([]HoldRecord, error) {

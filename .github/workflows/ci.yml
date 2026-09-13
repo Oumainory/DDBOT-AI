@@ -97,6 +97,34 @@ jobs:
           name: coverage-report
           path: coverage.html
 
+  race:
+    name: Targeted race regression tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run targeted race tests
+        run: >-
+          go test -race -mod=readonly
+          ./internal/idempotency
+          ./internal/platformdb
+          ./internal/enforce
+          ./internal/mediacache
+          ./internal/migration
+          ./internal/deliverysnapshot
+          ./admin
+          ./internal/adminapi
+          ./internal/replay
+
   compatibility-manifest:
     name: Phase 0 compatibility manifest
     needs: test

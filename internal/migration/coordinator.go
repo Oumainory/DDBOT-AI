@@ -1068,6 +1068,17 @@ func (c *Coordinator) TryHoldForTarget(ctx context.Context, payload deliverysnap
 		return false, nil
 	}
 	if err := c.Hold(ctx, payload); err != nil {
+		// Eligibility is a deliberately cheap snapshot.  If the migration
+		// reaches a terminal/non-committing state (or the target is no longer
+		// owned by the old connector) before the durable hold transaction, the
+		// message is no longer affected and must continue through the normal
+		// Legacy send path.  These expected stale-eligibility outcomes are not
+		// persistence failures and must not transition the migration to recovery.
+		if errors.Is(err, platformdb.ErrMigrationInvalidState) ||
+			errors.Is(err, platformdb.ErrMigrationNotFound) ||
+			errors.Is(err, platformdb.ErrMigrationTargetUnavailable) {
+			return false, nil
+		}
 		// Affected delivery must never fall through to an uncertain Messenger
 		// route when its durable snapshot cannot be persisted. Record the
 		// failure in the migration journal before returning to the Legacy hook;

@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
@@ -67,6 +68,7 @@ type Cache struct {
 	now                          func() time.Time
 	retention                    time.Duration
 	maxFile, maxEvent, maxGlobal int64
+	quotaMu                      sync.Mutex
 }
 
 func New(config Config) *Cache {
@@ -209,10 +211,6 @@ func (c *Cache) Fetch(ctx context.Context, routeDecisionID, eventID, rawURL stri
 	if resp.ContentLength > c.maxFile {
 		return Entry{}, ErrMediaTooLarge
 	}
-	total, err := c.repository.MediaCacheUsage(ctx)
-	if err == nil && total >= c.maxGlobal {
-		c.evict(ctx, c.now().Add(-c.retention), total-c.maxGlobal+c.maxFile)
-	}
 	return c.putStream(ctx, routeDecisionID, eventID, rawURL, resp.Body, resp.Header.Get("Content-Type"))
 }
 
@@ -270,22 +268,40 @@ func (c *Cache) putStream(ctx context.Context, routeDecisionID, eventID, sourceU
 	}
 	digest := hash.Sum(nil)
 	sha := "sha256:" + hex.EncodeToString(digest)
-	if eventID != "" {
-		if current, usageErr := c.repository.MediaCacheEventUsage(ctx, eventID); usageErr == nil && current+n > c.maxEvent {
-			return Entry{}, ErrEventTooLarge
-		}
-	}
+	// The filesystem rename and the durable accounting form one process-local
+	// quota boundary. SQLite is the durable ledger, while this mutex prevents
+	// two in-process fetches from both observing the same stale usage and
+	// committing beyond the event/global limits.
+	c.quotaMu.Lock()
+	defer c.quotaMu.Unlock()
 	if existing, e := c.repository.MediaCacheEntryBySHA(ctx, sha); e == nil {
 		if value, ok := c.reuseExisting(ctx, existing, routeDecisionID, eventID, sourceURL); ok {
 			return value, nil
 		}
 	}
+	if eventID != "" {
+		current, usageErr := c.repository.MediaCacheEventUsage(ctx, eventID)
+		if usageErr != nil {
+			return Entry{}, ErrCacheUnavailable
+		}
+		if current+n > c.maxEvent {
+			return Entry{}, ErrEventTooLarge
+		}
+	}
 	if c.maxGlobal > 0 && n > c.maxGlobal {
 		return Entry{}, ErrMediaTooLarge
 	}
-	if usage, usageErr := c.repository.MediaCacheUsage(ctx); usageErr == nil && usage+n > c.maxGlobal {
+	usage, usageErr := c.repository.MediaCacheUsage(ctx)
+	if usageErr != nil {
+		return Entry{}, ErrCacheUnavailable
+	}
+	if usage+n > c.maxGlobal {
 		c.evict(ctx, c.now().Add(-c.retention), usage+n-c.maxGlobal)
-		if after, afterErr := c.repository.MediaCacheUsage(ctx); afterErr == nil && after+n > c.maxGlobal {
+		after, afterErr := c.repository.MediaCacheUsage(ctx)
+		if afterErr != nil {
+			return Entry{}, ErrCacheUnavailable
+		}
+		if after+n > c.maxGlobal {
 			return Entry{}, ErrMediaTooLarge
 		}
 	}
@@ -318,7 +334,11 @@ func (c *Cache) putStream(ctx context.Context, routeDecisionID, eventID, sourceU
 		_ = os.Remove(finalPath)
 		return Entry{}, ErrCacheUnavailable
 	}
-	_ = c.repository.LinkMediaCache(ctx, platformdb.MediaCacheLinkRecord{EntryID: id, RouteDecisionID: routeDecisionID, EventID: eventID, SourceURL: sourceURL, CreatedAt: stamp})
+	if err := c.repository.LinkMediaCache(ctx, platformdb.MediaCacheLinkRecord{EntryID: id, RouteDecisionID: routeDecisionID, EventID: eventID, SourceURL: sourceURL, CreatedAt: stamp}); err != nil {
+		_ = c.repository.DeleteMediaCacheEntry(ctx, id)
+		_ = os.Remove(finalPath)
+		return Entry{}, ErrCacheUnavailable
+	}
 	if usage, e := c.repository.MediaCacheUsage(ctx); e == nil && usage > c.maxGlobal {
 		c.evict(ctx, stamp.Add(-c.retention), usage-c.maxGlobal)
 	}

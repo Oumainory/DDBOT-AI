@@ -889,7 +889,11 @@ func (s *Server) handleAIEvaluationCaseDetail(w http.ResponseWriter, r *http.Req
 			if !s.aiAvailable(w) {
 				return
 			}
-			body, _ := readJSONBody(r, &map[string]any{})
+			body, err := readJSONBody(r, &map[string]any{})
+			if err != nil {
+				s.writeError(w, http.StatusBadRequest, "invalid_argument", "evaluation case delete request is invalid")
+				return
+			}
 			s.executeDomainCommand(w, r, "ai_evaluation_case_delete", body, func() (int, apiEnvelope) {
 				if err := s.aiRepository.DeleteEvaluationCase(r.Context(), id); err != nil {
 					return s.aiErrorEnvelope(err)
@@ -1122,7 +1126,11 @@ func (s *Server) handleAISubresource(w http.ResponseWriter, r *http.Request) boo
 				if !s.aiAvailable(w) {
 					return
 				}
-				body, _ := readJSONBody(r, &map[string]any{})
+				body, err := readJSONBody(r, &map[string]any{})
+				if err != nil {
+					s.writeError(w, http.StatusBadRequest, "invalid_argument", "release activation request is invalid")
+					return
+				}
 				s.executeDomainCommand(w, r, "ai_release_activate", body, func() (int, apiEnvelope) {
 					if err := s.aiRepository.ActivateRelease(r.Context(), parts[1]); err != nil {
 						return s.aiErrorEnvelope(err)
@@ -1265,7 +1273,11 @@ func (s *Server) handleAIProfileDetail(w http.ResponseWriter, r *http.Request, i
 			if !s.aiAvailable(w) {
 				return
 			}
-			body, _ := readJSONBody(r, &map[string]any{})
+			body, err := readJSONBody(r, &map[string]any{})
+			if err != nil {
+				s.writeError(w, http.StatusBadRequest, "invalid_argument", "profile delete request is invalid")
+				return
+			}
 			s.executeDomainCommand(w, r, "ai_profile_delete", body, func() (int, apiEnvelope) {
 				if err := s.aiRepository.DeleteProfile(r.Context(), id); err != nil {
 					return s.aiErrorEnvelope(err)

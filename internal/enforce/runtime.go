@@ -65,6 +65,11 @@ type Config struct {
 	// Readiness is injectable for deterministic tests, but production defaults
 	// to the durable AIRepository gate. A true result never bypasses approval.
 	Readiness func(context.Context, classifier.Release) (bool, error)
+	// DecisionRecoveryError is set by the platform bootstrap when the durable
+	// AI decision recovery pass could not complete.  ENFORCE must remain
+	// fail-open until a later process restart can establish that invariant; a
+	// transient recovery failure must never allow new provider calls.
+	DecisionRecoveryError error
 	// CacheMedia is an optional, bounded best-effort enhancement invoked only
 	// after a DROP transaction has committed. Its failure is deliberately
 	// ignored so media availability can never change the authoritative action.
@@ -91,6 +96,7 @@ type Runtime struct {
 	gate         chan struct{}
 	queueCap     int
 	readinessFn  func(context.Context, classifier.Release) (bool, error)
+	recoveryErr  bool
 	cacheMedia   func(context.Context, replay.Snapshot) error
 	mediaGate    chan struct{}
 	mediaTimeout time.Duration
@@ -119,7 +125,7 @@ func New(config Config) *Runtime {
 	if config.MediaCacheTimeout <= 0 {
 		config.MediaCacheTimeout = 10 * time.Second
 	}
-	return &Runtime{ai: config.AIRepository, repo: config.Repository, provider: config.Provider, now: config.Now, timeout: config.Timeout, gate: make(chan struct{}, config.MaxConcurrency), queueCap: config.QueueCapacity, readinessFn: config.Readiness, cacheMedia: config.CacheMedia, mediaGate: make(chan struct{}, config.MediaCacheConcurrency), mediaTimeout: config.MediaCacheTimeout, flights: make(map[string]*flight)}
+	return &Runtime{ai: config.AIRepository, repo: config.Repository, provider: config.Provider, now: config.Now, timeout: config.Timeout, gate: make(chan struct{}, config.MaxConcurrency), queueCap: config.QueueCapacity, readinessFn: config.Readiness, recoveryErr: config.DecisionRecoveryError != nil, cacheMedia: config.CacheMedia, mediaGate: make(chan struct{}, config.MediaCacheConcurrency), mediaTimeout: config.MediaCacheTimeout, flights: make(map[string]*flight)}
 }
 
 func (r *Runtime) SetEmergencyDisabled(disabled bool) {
@@ -137,6 +143,9 @@ func (r *Runtime) Close() {
 func (r *Runtime) Ready(ctx context.Context, release classifier.Release) (bool, error) {
 	if r == nil || r.repo == nil {
 		return false, platformdb.ErrPhase5Unavailable
+	}
+	if r.recoveryErr {
+		return false, platformdb.ErrEnforceNotReady
 	}
 	if r.emergency.Load() || r.durableEmergency(ctx) {
 		return false, nil
@@ -200,6 +209,13 @@ func (r *Runtime) Evaluate(ctx context.Context, event domain.NormalizedEvent, ro
 				continue
 			}
 			r.persistPass(ctx, event, route, &results[i], "ai_mode_"+string(route.Mode))
+		}
+		return results, nil
+	}
+	if r.recoveryErr {
+		for _, i := range enforceIndexes {
+			results[i].Reason = "enforce_recovery_unavailable"
+			r.persistPass(ctx, event, routes[i], &results[i], results[i].Reason)
 		}
 		return results, nil
 	}
@@ -307,9 +323,13 @@ func (r *Runtime) Evaluate(ctx context.Context, event domain.NormalizedEvent, ro
 			if out.Action == policy.RouteDrop {
 				out.Action = policy.RoutePass
 				out.SuppressSend = false
-				if out.Reason == "" {
-					out.Reason = "fail_open_storage"
-				}
+				// The policy recommendation was DROP, but the durable final
+				// boundary rejected it (for example because an operator disabled
+				// ENFORCE or revoked the approval while the provider was running).
+				// Do not persist a misleading enforce/category-drop reason for the
+				// resulting PASS; make the fail-open transition explicit so the
+				// durable route is recorded with effective_mode=shadow.
+				out.Reason = "fail_open_storage"
 			}
 			r.persistPassWithDecision(ctx, event, route, &out, out.Reason, decision.ID)
 		}
@@ -384,8 +404,10 @@ func (r *Runtime) persistDrop(ctx context.Context, event domain.NormalizedEvent,
 	if err != nil {
 		return false
 	}
-	record := platformdb.RouteDecisionRecord{ID: id, EventID: event.ID, ObservedEventID: first(route.ObservedEventID, event.ObservedEventID), RouteObservationID: route.RouteObservationID, SourceID: first(route.SourceID, event.SourceID), TargetID: route.Target.ID, SubscriptionID: route.SubscriptionID, ClassifierReleaseID: aiDecision.ClassifierReleaseID, AIDecisionID: aiDecision.ID, ConfiguredMode: string(route.Mode), EffectiveMode: string(route.Mode), ProfileID: route.Policy.Profile.ID, PolicyDigest: policy.Digest(policy.EffectivePolicy{Mode: policy.ModeEnforce, Threshold: route.Policy.Threshold, CategoryActions: route.Policy.Profile.CategoryActions, TagActions: route.Policy.Profile.TagActions}), SuggestedAction: "drop", EffectiveAction: "drop", ReasonCode: out.Reason, HardPassReason: out.HardPassReason, EnforceApprovalID: out.EnforceApprovalID, CreatedAt: r.now(), DecidedAt: r.now()}
-	if err := r.repo.PersistDrop(ctx, record, platformdb.ReplayableEventRecord{ID: "", SchemaVersion: 1, RouteDecisionID: id, EventID: event.ID, ObservedEventID: record.ObservedEventID, SourceID: record.SourceID, TargetID: route.Target.ID, SubscriptionID: route.SubscriptionID, EventType: string(event.EventType), SnapshotJSON: raw, OriginalClassificationRef: aiDecision.ID, CreatedAt: r.now(), ExpiresAt: r.now().Add(platformdb.ReplayRetention)}); err != nil {
+	effectivePolicy := policy.EffectivePolicy{Mode: policy.ModeEnforce, Threshold: route.Policy.Threshold, CategoryActions: route.Policy.Profile.CategoryActions, TagActions: route.Policy.Profile.TagActions}
+	policyDigest, profileDigest := policy.Digest(effectivePolicy), policy.ProfileDigest(route.Policy.Profile)
+	record := platformdb.RouteDecisionRecord{ID: id, EventID: event.ID, ObservedEventID: first(route.ObservedEventID, event.ObservedEventID), RouteObservationID: route.RouteObservationID, SourceID: first(route.SourceID, event.SourceID), TargetID: route.Target.ID, SubscriptionID: route.SubscriptionID, ClassifierReleaseID: aiDecision.ClassifierReleaseID, AIDecisionID: aiDecision.ID, ConfiguredMode: string(route.Mode), EffectiveMode: string(route.Mode), ProfileID: route.Policy.Profile.ID, PolicyDigest: policyDigest, SuggestedAction: "drop", EffectiveAction: "drop", ReasonCode: out.Reason, HardPassReason: out.HardPassReason, EnforceApprovalID: out.EnforceApprovalID, CreatedAt: r.now(), DecidedAt: r.now()}
+	if err := r.repo.PersistDropIfAllowed(ctx, record, platformdb.ReplayableEventRecord{ID: "", SchemaVersion: 1, RouteDecisionID: id, EventID: event.ID, ObservedEventID: record.ObservedEventID, SourceID: record.SourceID, TargetID: route.Target.ID, SubscriptionID: route.SubscriptionID, EventType: string(event.EventType), SnapshotJSON: raw, OriginalClassificationRef: aiDecision.ID, CreatedAt: r.now(), ExpiresAt: r.now().Add(platformdb.ReplayRetention)}, out.EnforceApprovalID, policyDigest, profileDigest, r.now()); err != nil {
 		return false
 	}
 	// The durable DROP boundary is complete.  Cache only the process-independent
@@ -457,7 +479,7 @@ func (r *Runtime) persistPassWithDecision(ctx context.Context, event domain.Norm
 // classification, remains effective ENFORCE and is not listed here.
 func enforceSafeLockReason(reason string) bool {
 	switch strings.TrimSpace(reason) {
-	case "enforce_not_ready", "enforce_storage_error", "enforce_approval_invalid", "fail_open_queue_full", "emergency_enforce_disabled", "ai_error", "ambiguous_route", "classifier_release_stale", "fail_open_storage", "phase5_unavailable", "observation_unavailable", "invalid_public_snapshot":
+	case "enforce_not_ready", "enforce_storage_error", "enforce_recovery_unavailable", "enforce_approval_invalid", "fail_open_queue_full", "emergency_enforce_disabled", "ai_error", "ambiguous_route", "classifier_release_stale", "fail_open_storage", "phase5_unavailable", "observation_unavailable", "invalid_public_snapshot":
 		return true
 	default:
 		return false

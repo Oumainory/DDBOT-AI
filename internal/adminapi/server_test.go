@@ -13,6 +13,7 @@ import (
 
 	"github.com/Oumainory/DDBOT-AI/internal/auth"
 	"github.com/Oumainory/DDBOT-AI/internal/buildinfo"
+	"github.com/Oumainory/DDBOT-AI/internal/idempotency"
 	"github.com/Oumainory/DDBOT-AI/internal/origin"
 	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
 	"github.com/Oumainory/DDBOT-AI/internal/secretstore"
@@ -39,7 +40,8 @@ func newPlatformAPITestServer(t *testing.T) (*Server, auth.BootstrapResult, func
 		Auth: authService, Probe: &probe, Origin: origin.Policy{AllowedOrigin: apiTestOrigin},
 		Cookie:           session.CookiePolicy{SameSite: http.SameSiteLaxMode},
 		DomainRepository: platformdb.NewDomainRepository(store), LegacySubscriptions: subscription.NewService(),
-		Build: buildinfo.Info{ProductName: "DDBOT-AI", Version: "test-version", Commit: "0123456789abcdef0123456789abcdef01234567", BuildTime: "test-time", SourceRepository: buildinfo.SourceRepository, License: buildinfo.License, LicenseName: buildinfo.LicenseName},
+		Idempotency: idempotency.NewMemoryStore(idempotency.DefaultRetention),
+		Build:       buildinfo.Info{ProductName: "DDBOT-AI", Version: "test-version", Commit: "0123456789abcdef0123456789abcdef01234567", BuildTime: "test-time", SourceRepository: buildinfo.SourceRepository, License: buildinfo.License, LicenseName: buildinfo.LicenseName},
 	})
 	if err != nil {
 		_ = store.Close()

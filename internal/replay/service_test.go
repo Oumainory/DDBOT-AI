@@ -49,6 +49,73 @@ func TestReplayBypassesAIAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestReplayDurableIdempotencySurvivesRestartWithoutResend(t *testing.T) {
+	at := time.Unix(1700000000, 0).UTC()
+	path := filepath.Join(t.TempDir(), "replay-durable.sqlite")
+	store, err := platformdb.Open(context.Background(), platformdb.Config{Path: path, Now: func() time.Time { return at }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := platformdb.NewPhase5Repository(store)
+	event := domain.NormalizedEvent{ID: "event-replay-restart", NormalizedEventID: "event-replay-restart", ObservedEventID: "obs-replay-restart", Platform: domain.PlatformTwitter, SourceID: "source-restart", ExternalID: "tweet-restart", EventType: domain.EventTweet, Body: "public", NormalizerVersion: "n1", CreatedAt: at, ReplayPayload: json.RawMessage(`{"public":true}`)}
+	snapshot, err := FromNormalizedEvent(event, "route-replay-restart", TargetIdentity{TargetID: "target-restart", TargetType: "group", ExternalID: "123", ConnectorID: "connector-restart"}, "sub-restart", "ai-restart", at)
+	if err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	raw, err := snapshot.Marshal()
+	if err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := repo.PersistDrop(context.Background(), platformdb.RouteDecisionRecord{ID: "route-replay-restart", EventID: event.ID, SourceID: event.SourceID, TargetID: "target-restart", ConfiguredMode: "enforce", EffectiveMode: "enforce", SuggestedAction: "drop", EffectiveAction: "drop", CreatedAt: at, DecidedAt: at}, platformdb.ReplayableEventRecord{ID: "replay-restart", SchemaVersion: 1, RouteDecisionID: "route-replay-restart", EventID: event.ID, SourceID: event.SourceID, TargetID: "target-restart", EventType: string(event.EventType), SnapshotJSON: raw, CreatedAt: at, ExpiresAt: at.Add(24 * time.Hour)}); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	fingerprint, err := idempotency.NewFingerprint("POST", "/api/v2/route-decisions/route-replay-restart/replay", []byte(`{}`))
+	if err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	var sends atomic.Int32
+	firstService := NewService(Config{Repository: repo, Idempotency: platformdb.NewIdempotencyStore(store), Render: func(context.Context, Snapshot) ([]byte, error) { return []byte("current-template"), nil }, Send: func(context.Context, TargetIdentity, []byte) (SendResult, error) {
+		sends.Add(1)
+		return SendResult{Status: domain.DeliverySent, ResultCode: "sent"}, nil
+	}, Now: func() time.Time { return at.Add(time.Minute) }})
+	first, err := firstService.Replay(context.Background(), "route-replay-restart", "admin", "replay-restart-key", fingerprint)
+	if err != nil || first.Status != domain.DeliverySent {
+		_ = store.Close()
+		t.Fatalf("first replay = %#v, err=%v", first, err)
+	}
+	if sends.Load() != 1 {
+		_ = store.Close()
+		t.Fatalf("first send count = %d, want one", sends.Load())
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := platformdb.Open(context.Background(), platformdb.Config{Path: path, Now: func() time.Time { return at.Add(2 * time.Minute) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	secondService := NewService(Config{Repository: platformdb.NewPhase5Repository(reopened), Idempotency: platformdb.NewIdempotencyStore(reopened), Render: func(context.Context, Snapshot) ([]byte, error) {
+		t.Fatal("renderer called during completed replay")
+		return nil, nil
+	}, Send: func(context.Context, TargetIdentity, []byte) (SendResult, error) {
+		t.Fatal("sender called during completed replay")
+		return SendResult{}, nil
+	}, Now: func() time.Time { return at.Add(2 * time.Minute) }})
+	second, err := secondService.Replay(context.Background(), "route-replay-restart", "admin", "replay-restart-key", fingerprint)
+	if err != nil || second.ID != first.ID || second.Status != domain.DeliverySent {
+		t.Fatalf("restart replay = %#v, want original delivery %#v, err=%v", second, first, err)
+	}
+	if sends.Load() != 1 {
+		t.Fatalf("restart send count = %d, want exactly one", sends.Load())
+	}
+}
+
 func TestReplayRejectsExpiredSnapshotWithoutSourceFetch(t *testing.T) {
 	at := time.Unix(1700000000, 0).UTC()
 	store, err := platformdb.Open(context.Background(), platformdb.Config{Path: filepath.Join(t.TempDir(), "replay-expired.sqlite"), Now: func() time.Time { return at }})
@@ -63,7 +130,7 @@ func TestReplayRejectsExpiredSnapshotWithoutSourceFetch(t *testing.T) {
 	if err := repo.PutReplayableEvent(context.Background(), platformdb.ReplayableEventRecord{ID: "replay-expired", SchemaVersion: 1, RouteDecisionID: "route-expired", EventID: "event-expired", EventType: "tweet", SnapshotJSON: json.RawMessage(`{"schema_version":1}`), CreatedAt: at.Add(-2 * time.Hour), ExpiresAt: at.Add(-time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	service := NewService(Config{Repository: repo, Render: func(context.Context, Snapshot) ([]byte, error) {
+	service := NewService(Config{Repository: repo, Idempotency: idempotency.NewMemoryStore(idempotency.DefaultRetention), Render: func(context.Context, Snapshot) ([]byte, error) {
 		t.Fatal("renderer called for expired snapshot")
 		return nil, nil
 	}, Send: func(context.Context, TargetIdentity, []byte) (SendResult, error) {

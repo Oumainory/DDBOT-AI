@@ -2,8 +2,11 @@ package mediacache
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"net"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,6 +34,121 @@ func TestCachePutDeduplicatesAndLinksPublicMedia(t *testing.T) {
 	if got, err := cache.Read(first); err != nil || string(got) != "png-data" {
 		t.Fatalf("cached bytes = %q, err=%v", got, err)
 	}
+}
+
+func TestCacheConcurrentEventQuotaNeverCommitsBeyondLimit(t *testing.T) {
+	store, err := platformdb.Open(context.Background(), platformdb.Config{Path: filepath.Join(t.TempDir(), "cache-event-quota.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	repo := platformdb.NewPhase5Repository(store)
+	cache := New(Config{Root: t.TempDir(), Repository: repo, MaxEventBytes: 30, MaxGlobalBytes: 1 << 20})
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	successes := 0
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			if _, putErr := cache.Put(context.Background(), "route-event-quota", "event-event-quota", "https://cdn.example.test/event.png", []byte("png-data-"+string(rune('a'+i))), "image/png"); putErr == nil {
+				mu.Lock()
+				successes++
+				mu.Unlock()
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	if successes > 3 {
+		t.Fatalf("successful concurrent event writes = %d, want at most 3", successes)
+	}
+	usage, err := repo.MediaCacheEventUsage(context.Background(), "event-event-quota")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage > 30 {
+		t.Fatalf("event usage = %d, exceeds 30-byte limit", usage)
+	}
+}
+
+func TestCacheConcurrentGlobalQuotaNeverCommitsBeyondLimit(t *testing.T) {
+	store, err := platformdb.Open(context.Background(), platformdb.Config{Path: filepath.Join(t.TempDir(), "cache-global-quota.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	repo := platformdb.NewPhase5Repository(store)
+	cache := New(Config{Root: t.TempDir(), Repository: repo, MaxGlobalBytes: 25})
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, _ = cache.Put(context.Background(), "route-global-"+string(rune('a'+i)), "event-global-"+string(rune('a'+i)), "https://cdn.example.test/global.png", []byte("global-"+string(rune('a'+i))), "image/png")
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	usage, err := repo.MediaCacheUsage(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage > 25 {
+		t.Fatalf("global usage = %d, exceeds 25-byte limit", usage)
+	}
+}
+
+func TestCacheConcurrentSameSHACreatesOneDurableEntry(t *testing.T) {
+	store, err := platformdb.Open(context.Background(), platformdb.Config{Path: filepath.Join(t.TempDir(), "cache-dedup-race.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	repo := platformdb.NewPhase5Repository(store)
+	cache := New(Config{Root: t.TempDir(), Repository: repo})
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	successes := 0
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			if _, putErr := cache.Put(context.Background(), "route-dedup", "event-dedup-"+string(rune('a'+i)), "https://cdn.example.test/dedup.png", []byte("same-png-data"), "image/png"); putErr == nil {
+				mu.Lock()
+				successes++
+				mu.Unlock()
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	if successes == 0 {
+		t.Fatal("all concurrent deduplicated writes failed")
+	}
+	entry, err := repo.MediaCacheEntryBySHA(context.Background(), "sha256:"+sha256Hex("same-png-data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage, err := repo.MediaCacheUsage(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID == "" || usage != int64(len("same-png-data")) {
+		t.Fatalf("same-SHA entry=%#v usage=%d, want one %d-byte durable object", entry, usage, len("same-png-data"))
+	}
+}
+
+func sha256Hex(value string) string {
+	// The production cache uses SHA-256 as the content-addressed key. Keeping
+	// this helper local to the regression test avoids relying on cache internals.
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(value)))
 }
 
 func TestCacheRejectsUnsafeURLAndOversizedStream(t *testing.T) {

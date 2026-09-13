@@ -51,7 +51,7 @@ type replayOutcome struct {
 
 type Config struct {
 	Repository    *platformdb.Phase5Repository
-	Idempotency   *idempotency.MemoryStore
+	Idempotency   idempotency.Store
 	ResolveTarget TargetResolver
 	Render        Renderer
 	Send          Sender
@@ -61,7 +61,7 @@ type Config struct {
 
 type Service struct {
 	repository    *platformdb.Phase5Repository
-	idempotency   *idempotency.MemoryStore
+	idempotency   idempotency.Store
 	resolveTarget TargetResolver
 	render        Renderer
 	send          Sender
@@ -74,7 +74,10 @@ func NewService(config Config) *Service {
 		config.Now = time.Now
 	}
 	if config.Idempotency == nil {
-		config.Idempotency = idempotency.NewMemoryStore(idempotency.DefaultRetention)
+		// Replay is an externally visible side-effect boundary. Do not silently
+		// replace a missing durable backend with an in-process store that would
+		// forget claims/results after restart; callers must wire SQLite explicitly.
+		config.Idempotency = platformdb.NewIdempotencyStore(nil)
 	}
 	return &Service{repository: config.Repository, idempotency: config.Idempotency, resolveTarget: config.ResolveTarget, render: config.Render, send: config.Send, sendSnapshot: config.SendSnapshot, now: config.Now}
 }
@@ -269,6 +272,8 @@ func replayErrorCode(err error) string {
 	case errors.Is(err, platformdb.ErrDeliveryRetryNotAllowed):
 		return "delivery_retry_not_allowed"
 	case errors.Is(err, platformdb.ErrPhase5Unavailable):
+		return "phase5_unavailable"
+	case errors.Is(err, platformdb.ErrIdempotencyUnavailable):
 		return "phase5_unavailable"
 	case errors.Is(err, ErrInvalidSnapshot), errors.Is(err, ErrSnapshotExpired):
 		return "invalid_snapshot"

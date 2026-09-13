@@ -195,6 +195,31 @@ FROM sources WHERE id = ?`, strings.TrimSpace(id)).Scan(
 	return source, nil
 }
 
+// SourceByPlatformExternal resolves the durable Source identity used by the
+// production Legacy bridge.  Observation records carry the upstream external
+// identity; policy scopes must never use that value directly because a
+// durable source UUID is the only unambiguous scope key.
+func (r *DomainRepository) SourceByPlatformExternal(ctx context.Context, platform, externalID string) (domain.Source, error) {
+	if err := r.requireStore(); err != nil {
+		return domain.Source{}, err
+	}
+	var source domain.Source
+	err := r.store.db.QueryRowContext(domainContext(ctx), `
+SELECT id, platform, external_id, handle, display_name, canonical_url, status,
+       metadata_json, created_at, updated_at
+FROM sources WHERE platform=? AND external_id=?`, domain.NormalizePlatform(platform), strings.TrimSpace(externalID)).Scan(
+		&source.ID, &source.Platform, &source.ExternalID, &source.Handle,
+		&source.DisplayName, &source.CanonicalURL, &source.Status, &source.MetadataJSON,
+		&source.CreatedAt, &source.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Source{}, ErrSourceNotFound
+	}
+	if err != nil {
+		return domain.Source{}, fmt.Errorf("platformdb: read source by identity: %w", err)
+	}
+	return source, nil
+}
+
 func (r *DomainRepository) CreateSource(ctx context.Context, source domain.Source) (domain.Source, error) {
 	if err := r.requireStore(); err != nil {
 		return domain.Source{}, err
@@ -692,6 +717,44 @@ func (r *DomainRepository) ProjectionsForSource(ctx context.Context, sourceID st
 
 func (r *DomainRepository) ProjectionsForTarget(ctx context.Context, targetID string) ([]domain.SubscriptionProjection, error) {
 	return r.listProjectionsWhere(ctx, "target_id = ?", targetID)
+}
+
+// ActiveProjectionForSourceTarget resolves the single enabled Legacy
+// subscription projection for a durable Source/Target pair. Multiple active
+// projections are ambiguous at the pre-send boundary and must fail open
+// rather than silently selecting one policy scope.
+func (r *DomainRepository) ActiveProjectionForSourceTarget(ctx context.Context, sourceID, targetID string) (domain.SubscriptionProjection, error) {
+	if err := r.requireStore(); err != nil {
+		return domain.SubscriptionProjection{}, err
+	}
+	rows, err := r.store.db.QueryContext(domainContext(ctx), `
+SELECT id, source_id, target_id, legacy_key, enabled,
+       legacy_options_snapshot_json, projection_status, projected_at
+FROM subscription_projections
+WHERE source_id=? AND target_id=? AND enabled=1 AND projection_status='active'
+ORDER BY projected_at DESC, id`, strings.TrimSpace(sourceID), strings.TrimSpace(targetID))
+	if err != nil {
+		return domain.SubscriptionProjection{}, fmt.Errorf("platformdb: resolve subscription projection: %w", err)
+	}
+	defer rows.Close()
+	var values []domain.SubscriptionProjection
+	for rows.Next() {
+		var value domain.SubscriptionProjection
+		var enabled int
+		if err := rows.Scan(&value.ID, &value.SourceID, &value.TargetID, &value.LegacyKey, &enabled,
+			&value.LegacyOptionsSnapshotJSON, &value.ProjectionStatus, &value.ProjectedAt); err != nil {
+			return domain.SubscriptionProjection{}, err
+		}
+		value.Enabled = enabled != 0
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		return domain.SubscriptionProjection{}, err
+	}
+	if len(values) != 1 {
+		return domain.SubscriptionProjection{}, domain.ErrInvalidDomain
+	}
+	return values[0], nil
 }
 
 // ProjectionsForConnector returns projections whose target belongs to the

@@ -152,7 +152,12 @@ func (s *Server) handleMigrationSubresource(w http.ResponseWriter, r *http.Reque
 			if !s.migrationAvailable(w) {
 				return
 			}
-			s.executeDomainCommand(w, r, "migration_discover", []byte("{}"), func() (int, apiEnvelope) {
+			body, err := readBoundedBody(r)
+			if err != nil {
+				s.writeError(w, http.StatusBadRequest, "invalid_argument", "migration request is invalid")
+				return
+			}
+			s.executeDomainCommand(w, r, "migration_discover", body, func() (int, apiEnvelope) {
 				values, err := s.migrationCoordinator.Discover(r.Context(), id)
 				if err != nil {
 					return migrationErrorEnvelope(err)
@@ -170,7 +175,12 @@ func (s *Server) handleMigrationSubresource(w http.ResponseWriter, r *http.Reque
 			if !s.migrationAvailable(w) {
 				return
 			}
-			s.executeDomainCommand(w, r, "migration_preflight", []byte("{}"), func() (int, apiEnvelope) {
+			body, err := readBoundedBody(r)
+			if err != nil {
+				s.writeError(w, http.StatusBadRequest, "invalid_argument", "migration request is invalid")
+				return
+			}
+			s.executeDomainCommand(w, r, "migration_preflight", body, func() (int, apiEnvelope) {
 				value, err := s.migrationCoordinator.Preflight(r.Context(), id)
 				if err != nil {
 					return migrationErrorEnvelope(err)
@@ -226,7 +236,12 @@ func (s *Server) handleMigrationSubresource(w http.ResponseWriter, r *http.Reque
 			if !s.migrationAvailable(w) {
 				return
 			}
-			s.executeDomainCommand(w, r, "migration_commit", []byte("{}"), func() (int, apiEnvelope) {
+			body, err := readBoundedBody(r)
+			if err != nil {
+				s.writeError(w, http.StatusBadRequest, "invalid_argument", "migration request is invalid")
+				return
+			}
+			s.executeDomainCommand(w, r, "migration_commit", body, func() (int, apiEnvelope) {
 				value, err := s.migrationCoordinator.Commit(r.Context(), id)
 				if err != nil {
 					return migrationErrorEnvelope(err)
@@ -244,7 +259,12 @@ func (s *Server) handleMigrationSubresource(w http.ResponseWriter, r *http.Reque
 			if !s.migrationAvailable(w) {
 				return
 			}
-			s.executeDomainCommand(w, r, "migration_rollback", []byte("{}"), func() (int, apiEnvelope) {
+			body, err := readBoundedBody(r)
+			if err != nil {
+				s.writeError(w, http.StatusBadRequest, "invalid_argument", "migration request is invalid")
+				return
+			}
+			s.executeDomainCommand(w, r, "migration_rollback", body, func() (int, apiEnvelope) {
 				value, err := s.migrationCoordinator.Rollback(r.Context(), id)
 				if err != nil {
 					return migrationErrorEnvelope(err)
@@ -347,7 +367,12 @@ func (s *Server) handlePairingSubresource(w http.ResponseWriter, r *http.Request
 				s.writeError(w, 503, "pairing_unavailable", "pairing service is unavailable")
 				return
 			}
-			s.executeSanitizedReplayCommand(w, r, "telegram_pairing_create", []byte("{}"), func() (int, apiEnvelope) {
+			body, err := readBoundedBody(r)
+			if err != nil {
+				s.writeError(w, http.StatusBadRequest, "invalid_argument", "pairing request is invalid")
+				return
+			}
+			s.executeSanitizedReplayCommand(w, r, "telegram_pairing_create", body, func() (int, apiEnvelope) {
 				principal, _ := PrincipalFromContext(r.Context())
 				created, err := s.pairingService.Create(r.Context(), connectorID, principal.AdminID, "")
 				if err != nil {

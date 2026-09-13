@@ -153,6 +153,85 @@ func TestAIRepositoryDecisionReviewAndSummaryAreDurable(t *testing.T) {
 	}
 }
 
+func TestAIRepositoryReadinessIsolatedToActiveReleaseAndLatestCaseResult(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, Config{Path: "file::memory:?cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	repo := NewAIRepository(store)
+	at := time.Unix(1700000000, 0).UTC()
+	caseRaw, _ := json.Marshal(aiTestEvent())
+	if err := repo.CreateEvaluationCase(ctx, EvaluationCaseRecord{ID: "case-release-isolation", NormalizedInputSnapshot: caseRaw, ExpectedImportance: string(domain.ImportanceHigh), ExpectedAction: "pass", LabelKind: "real_reviewed", CreatedAt: at, UpdatedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	releaseA := aiTestRelease()
+	releaseA.ID, releaseA.Fingerprint, releaseA.Active = "release-readiness-a", "fp-readiness-a", true
+	if err := repo.SaveRelease(ctx, releaseA); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateEvaluationRun(ctx, EvaluationRunRecord{ID: "run-readiness-a", ClassifierReleaseID: releaseA.ID, CaseIDs: []string{"case-release-isolation"}, CreatedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.FinishEvaluationRun(ctx, "run-readiness-a", "completed", nil, 0, 0, at.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.PutEvaluationResult(ctx, EvaluationResultRecord{ID: "result-readiness-a", RunID: "run-readiness-a", CaseID: "case-release-isolation", SuggestedAction: "pass", ExpectedAction: "pass", Comparison: "match", CreatedAt: at.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	aReadiness, err := repo.EnforceReadiness(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aReadiness.CurrentReleaseID != releaseA.ID || aReadiness.RegressionCases != 1 || aReadiness.ImportantPassCases != 1 {
+		t.Fatalf("release A readiness = %#v", aReadiness)
+	}
+
+	releaseB := aiTestRelease()
+	releaseB.ID, releaseB.Fingerprint, releaseB.Active = "release-readiness-b", "fp-readiness-b", true
+	if err := repo.SaveRelease(ctx, releaseB); err != nil {
+		t.Fatal(err)
+	}
+	bEmpty, err := repo.EnforceReadiness(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bEmpty.CurrentReleaseID != releaseB.ID || bEmpty.RegressionCases != 0 || bEmpty.ImportantPassCases != 0 || bEmpty.KnownImportantFalseDrops != 0 {
+		t.Fatalf("new release inherited old evidence = %#v", bEmpty)
+	}
+
+	// Two completed runs for the same case must count once, using the latest
+	// deterministic run result. The first result is a false DROP; the latest
+	// result is a PASS and therefore clears the metric for release B without
+	// importing release A's evidence.
+	if err := repo.CreateEvaluationRun(ctx, EvaluationRunRecord{ID: "run-readiness-b-old", ClassifierReleaseID: releaseB.ID, CaseIDs: []string{"case-release-isolation"}, CreatedAt: at.Add(2 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.FinishEvaluationRun(ctx, "run-readiness-b-old", "completed", nil, 0, 0, at.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.PutEvaluationResult(ctx, EvaluationResultRecord{ID: "result-readiness-b-old", RunID: "run-readiness-b-old", CaseID: "case-release-isolation", SuggestedAction: "drop", ExpectedAction: "pass", Comparison: "mismatch", CreatedAt: at.Add(3 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateEvaluationRun(ctx, EvaluationRunRecord{ID: "run-readiness-b-latest", ClassifierReleaseID: releaseB.ID, CaseIDs: []string{"case-release-isolation"}, CreatedAt: at.Add(4 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.FinishEvaluationRun(ctx, "run-readiness-b-latest", "completed", nil, 0, 0, at.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.PutEvaluationResult(ctx, EvaluationResultRecord{ID: "result-readiness-b-latest", RunID: "run-readiness-b-latest", CaseID: "case-release-isolation", SuggestedAction: "pass", ExpectedAction: "pass", Comparison: "match", CreatedAt: at.Add(5 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	bReadiness, err := repo.EnforceReadiness(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bReadiness.RegressionCases != 1 || bReadiness.ImportantPassCases != 1 || bReadiness.KnownImportantFalseDrops != 0 || bReadiness.DropPrecision != 1 {
+		t.Fatalf("release B duplicate/latest metrics = %#v", bReadiness)
+	}
+}
+
 func TestAIRepositoryEvaluationImportIsAtomicAndStrict(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, Config{Path: "file::memory:?cache=shared"})

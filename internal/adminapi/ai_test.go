@@ -13,6 +13,7 @@ import (
 	"github.com/Oumainory/DDBOT-AI/internal/auth"
 	"github.com/Oumainory/DDBOT-AI/internal/buildinfo"
 	"github.com/Oumainory/DDBOT-AI/internal/evaluation"
+	"github.com/Oumainory/DDBOT-AI/internal/idempotency"
 	"github.com/Oumainory/DDBOT-AI/internal/origin"
 	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
 	"github.com/Oumainory/DDBOT-AI/internal/policy"
@@ -46,7 +47,7 @@ func TestAIProviderResponseDoesNotExposeCredentialAndEnforceIsLocked(t *testing.
 	server, err := NewServer(Config{Auth: authService, Probe: func() *platformdb.Probe {
 		probe := platformdb.NewProbeWithAuthAndSecret(store, nil, secretService)
 		return &probe
-	}(), Origin: origin.Policy{AllowedOrigin: apiTestOrigin}, Cookie: session.CookiePolicy{SameSite: http.SameSiteLaxMode}, LegacyOnline: atomic.NewBool(true), Build: buildinfo.Info{ProductName: "DDBOT-AI", Version: "test", Commit: "0123456789abcdef0123456789abcdef01234567", SourceRepository: buildinfo.SourceRepository, License: buildinfo.License, LicenseName: buildinfo.LicenseName}, LegacySubscriptions: subscription.NewService(), Idempotency: nil, AIRepository: aiRepository, SecretStore: secretService, AIProvider: aiProvider, ShadowRuntime: shadowRuntime, EvaluationRunner: evaluation.New(aiRepository, aiProvider, func() time.Time { return now })})
+	}(), Origin: origin.Policy{AllowedOrigin: apiTestOrigin}, Cookie: session.CookiePolicy{SameSite: http.SameSiteLaxMode}, LegacyOnline: atomic.NewBool(true), Build: buildinfo.Info{ProductName: "DDBOT-AI", Version: "test", Commit: "0123456789abcdef0123456789abcdef01234567", SourceRepository: buildinfo.SourceRepository, License: buildinfo.License, LicenseName: buildinfo.LicenseName}, LegacySubscriptions: subscription.NewService(), Idempotency: idempotency.NewMemoryStore(idempotency.DefaultRetention), AIRepository: aiRepository, SecretStore: secretService, AIProvider: aiProvider, ShadowRuntime: shadowRuntime, EvaluationRunner: evaluation.New(aiRepository, aiProvider, func() time.Time { return now })})
 	if err != nil {
 		t.Fatal(err)
 	}

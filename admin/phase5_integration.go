@@ -7,6 +7,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 
@@ -54,19 +55,27 @@ func targetForLegacyGroup(ctx context.Context, repository *platformdb.DomainRepo
 	return match, found == 1
 }
 
-func resolvePhase5Layers(ctx context.Context, aiRepository *platformdb.AIRepository, sourceID, targetExternal string) (policy.Mode, policy.PolicyContext) {
+func resolvePhase5Layers(ctx context.Context, aiRepository *platformdb.AIRepository, sourceID, targetID, subscriptionID string) (policy.Mode, policy.PolicyContext, bool) {
 	modeLayers := []policy.ModeLayer{{Name: "system", Mode: policy.ModeShadow}}
 	baseProfile := policy.OfficialGameProfile()
 	policyLayers := []policy.PolicyLayer{{Name: "system", Profile: &baseProfile}}
 	if aiRepository == nil {
-		return policy.ResolveAIMode(modeLayers...).Mode, policy.ResolvePolicyContext(policyLayers...)
+		return policy.ResolveAIMode(modeLayers...).Mode, policy.ResolvePolicyContext(policyLayers...), true
 	}
+	valid := true
 	load := func(scopeType, scopeID, name string) {
-		if scopeType != "global" && strings.TrimSpace(scopeID) == "" {
+		if scopeType != "global" && scopeType != "system" && strings.TrimSpace(scopeID) == "" {
+			valid = false
 			return
 		}
 		override, err := aiRepository.Policy(ctx, scopeType, scopeID)
+		if errors.Is(err, platformdb.ErrAIPolicyNotFound) {
+			// A missing sparse override means inherit; it is not an identity
+			// failure. The caller has already resolved the durable entity ID.
+			return
+		}
 		if err != nil {
+			valid = false
 			return
 		}
 		if override.Mode != "" && override.Mode != policy.ModeInherit {
@@ -74,16 +83,27 @@ func resolvePhase5Layers(ctx context.Context, aiRepository *platformdb.AIReposit
 		}
 		layer := policy.PolicyLayer{Name: name, Threshold: override.Threshold, DefaultAction: override.DefaultAction, CategoryActions: override.CategoryActions, TagActions: override.TagActions}
 		if override.ProfileID != "" {
-			if profile, profileErr := aiRepository.Profile(ctx, override.ProfileID); profileErr == nil {
-				layer.Profile = &profile
+			profile, profileErr := aiRepository.Profile(ctx, override.ProfileID)
+			if profileErr != nil {
+				// A persisted profile reference that cannot be resolved is an
+				// ambiguous policy context. It must fail open instead of silently
+				// inheriting the built-in profile and potentially producing DROP.
+				valid = false
+				return
 			}
+			layer.Profile = &profile
 		}
 		policyLayers = append(policyLayers, layer)
 	}
+	// System is a real durable overlay (scope_id is the empty string), with
+	// the built-in profile/mode above serving as its default when no row exists.
+	// Keep it in the same ordered resolution as the public policy contract.
+	load("system", "", "system")
 	load("global", "", "global")
 	load("source", sourceID, "source")
-	load("target", targetExternal, "target")
-	return policy.ResolveAIMode(modeLayers...).Mode, policy.ResolvePolicyContext(policyLayers...)
+	load("target", targetID, "target")
+	load("subscription", subscriptionID, "subscription")
+	return policy.ResolveAIMode(modeLayers...).Mode, policy.ResolvePolicyContext(policyLayers...), valid
 }
 
 // evaluateEnforceRoute is invoked synchronously immediately before the
@@ -107,8 +127,25 @@ func evaluateEnforceRoute(ctx context.Context, _ *adapter.SendingMessage, target
 		return false, "invalid_public_snapshot", nil
 	}
 	groupID := strconv.FormatInt(target.TargetCode(), 10)
-	resolvedTarget, _ := targetForLegacyGroup(ctx, domains, groupID)
-	mode, policyContext := resolvePhase5Layers(ctx, ai, event.SourceID, groupID)
+	resolvedTarget, targetOK := targetForLegacyGroup(ctx, domains, groupID)
+	if !targetOK {
+		return false, "ambiguous_route", nil
+	}
+	// The observation carries the source's upstream identity and the Legacy
+	// target carries a naked group number. Resolve both to their durable domain
+	// IDs before any policy lookup; external IDs are never valid scope keys.
+	resolvedSource, sourceErr := domains.SourceByPlatformExternal(ctx, string(event.Platform), event.SourceID)
+	if sourceErr != nil || strings.TrimSpace(resolvedSource.ID) == "" {
+		return false, "ambiguous_route", nil
+	}
+	projection, projectionErr := domains.ActiveProjectionForSourceTarget(ctx, resolvedSource.ID, resolvedTarget.ID)
+	if projectionErr != nil || strings.TrimSpace(projection.ID) == "" {
+		return false, "ambiguous_route", nil
+	}
+	mode, policyContext, layersOK := resolvePhase5Layers(ctx, ai, resolvedSource.ID, resolvedTarget.ID, projection.ID)
+	if !layersOK {
+		return false, "policy_unavailable", nil
+	}
 	if mode != policy.ModeEnforce {
 		// The pre-send hook is intentionally inert for OFF/SHADOW. Shadow's
 		// existing asynchronous hook remains the diagnostic path.
@@ -118,7 +155,11 @@ func evaluateEnforceRoute(ctx context.Context, _ *adapter.SendingMessage, target
 	if ai != nil {
 		release, _ = ai.ActiveRelease(ctx)
 	}
-	routes := []enforce.Route{{RouteObservationID: trace.RouteObservationID(), ObservedEventID: trace.EventObservationID(), SourceID: event.SourceID, Target: enforce.Target{ID: resolvedTarget.ID, Type: string(domain.TargetGroup), ExternalID: groupID, ConnectorID: resolvedTarget.ConnectorID}, Mode: mode, Policy: policyContext, Release: release}}
+	// The normalized event keeps the upstream external source identity for
+	// classifier input, but the durable route/policy identity must use the
+	// resolved Domain Source UUID. Persisting the external value here would
+	// make later feedback/readiness joins silently miss the scoped policy.
+	routes := []enforce.Route{{RouteObservationID: trace.RouteObservationID(), ObservedEventID: trace.EventObservationID(), SourceID: resolvedSource.ID, Target: enforce.Target{ID: resolvedTarget.ID, Type: string(domain.TargetGroup), ExternalID: groupID, ConnectorID: resolvedTarget.ConnectorID}, SubscriptionID: projection.ID, Mode: mode, Policy: policyContext, Release: release}}
 	results, evalErr := runtime.Evaluate(ctx, event, routes)
 	if evalErr != nil || len(results) != 1 {
 		return false, "enforce_evaluation_unavailable", nil

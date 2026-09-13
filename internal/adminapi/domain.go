@@ -18,6 +18,10 @@ import (
 	"github.com/Oumainory/DDBOT-AI/lsp/subscription"
 )
 
+const maxJSONBodyBytes int64 = 1 << 20
+
+var ErrRequestBodyTooLarge = errors.New("adminapi: request body exceeds limit")
+
 type sourceDTO struct {
 	ID                string `json:"id"`
 	Platform          string `json:"platform"`
@@ -279,7 +283,7 @@ func readJSONBody(r *http.Request, target any) ([]byte, error) {
 	if r == nil || r.Body == nil {
 		return []byte("{}"), json.Unmarshal([]byte("{}"), target)
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	body, err := readBoundedBody(r)
 	if err != nil {
 		return nil, err
 	}
@@ -297,6 +301,27 @@ func readJSONBody(r *http.Request, target any) ([]byte, error) {
 			return nil, errors.New("trailing json")
 		}
 		return nil, err
+	}
+	return body, nil
+}
+
+// readBoundedBody is shared by JSON and body-less domain commands. Even a
+// DELETE/POST command whose body is not decoded must not retain an unbounded
+// request for idempotency fingerprinting.
+func readBoundedBody(r *http.Request) ([]byte, error) {
+	if r == nil || r.Body == nil {
+		return nil, nil
+	}
+	// Read one byte beyond the hard limit so chunked requests and valid JSON
+	// followed by whitespace cannot be silently truncated into an accepted
+	// request. Content-Length is only an optimization; the bounded read is the
+	// authoritative check for every transfer mode.
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxJSONBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxJSONBodyBytes {
+		return nil, ErrRequestBodyTooLarge
 	}
 	return body, nil
 }
@@ -340,6 +365,8 @@ func (s *Server) executeCommand(w http.ResponseWriter, r *http.Request, command 
 			s.writeError(w, http.StatusConflict, "idempotency_conflict", "idempotency key conflicts with another request")
 		case errors.Is(err, idempotency.ErrInProgress):
 			s.writeError(w, http.StatusConflict, "idempotency_in_progress", "request is already in progress")
+		case errors.Is(err, platformdb.ErrIdempotencyUnavailable):
+			s.writeError(w, http.StatusServiceUnavailable, "domain_unavailable", "domain service is unavailable")
 		default:
 			s.writeError(w, http.StatusBadRequest, "invalid_argument", "idempotency key is invalid")
 		}
@@ -588,7 +615,11 @@ func (s *Server) deleteSource(w http.ResponseWriter, r *http.Request, id string)
 	if !s.domainAvailable(w) {
 		return
 	}
-	body, _ := io.ReadAll(r.Body)
+	body, err := readBoundedBody(r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_argument", "source delete request is invalid")
+		return
+	}
 	s.executeDomainCommand(w, r, "delete_source", body, func() (int, apiEnvelope) {
 		if err := s.domainRepository.DeleteSource(r.Context(), id); err != nil {
 			status, response := errorEnvelope(err)
@@ -777,7 +808,11 @@ func (s *Server) deleteTarget(w http.ResponseWriter, r *http.Request, id string)
 	if !s.domainAvailable(w) {
 		return
 	}
-	body, _ := io.ReadAll(r.Body)
+	body, err := readBoundedBody(r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_argument", "target delete request is invalid")
+		return
+	}
 	s.executeDomainCommand(w, r, "delete_target", body, func() (int, apiEnvelope) {
 		if gateErr := s.ensureTargetMutationAllowed(r.Context(), id); gateErr != nil {
 			return migrationErrorEnvelope(gateErr)
@@ -1142,7 +1177,11 @@ func (s *Server) deleteSubscription(w http.ResponseWriter, r *http.Request, id s
 	if !s.domainAvailable(w) {
 		return
 	}
-	body, _ := io.ReadAll(r.Body)
+	body, err := readBoundedBody(r)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid_argument", "subscription delete request is invalid")
+		return
+	}
 	s.executeDomainCommand(w, r, "delete_subscription", body, func() (int, apiEnvelope) {
 		projection, getErr := projectionByID(r.Context(), s.domainRepository, id)
 		if getErr != nil {
@@ -1185,7 +1224,11 @@ func (s *Server) handleRebuildProjection(w http.ResponseWriter, r *http.Request)
 		if !s.domainAvailable(w) {
 			return
 		}
-		body, _ := io.ReadAll(r.Body)
+		body, err := readBoundedBody(r)
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid_argument", "projection rebuild request is invalid")
+			return
+		}
 		s.executeDomainCommand(w, r, "rebuild_projection", body, func() (int, apiEnvelope) {
 			if err := s.rebuildProjection(r.Context()); err != nil {
 				status, response := errorEnvelope(err)

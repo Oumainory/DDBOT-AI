@@ -131,16 +131,40 @@ func (h legacyMigrationHolder) holdMessage(ctx context.Context, message *adapter
 	if target.TargetType() != mmsg.TargetGroup {
 		return false, nil
 	}
+	// Eligibility is deliberately checked before touching the message.  A
+	// migration hold is an optional maintenance boundary; when no committing
+	// migration owns this target the Legacy send must remain a pure no-op even
+	// if the message contains a segment that the durable snapshot format cannot
+	// represent.
+	if _, _, affected, err := h.current(ctx, target.TargetCode(), trace); err != nil || !affected {
+		return false, err
+	}
 	snapshot, err := deliverysnapshot.FromSendingMessage(message)
 	if err != nil {
+		// The eligibility read and serialization are intentionally separate so
+		// the common no-migration path never inspects the message. If a
+		// committing migration finished during serialization, an unsupported
+		// segment must not turn the now-unaffected Legacy send into a failure.
+		if _, _, stillAffected, checkErr := h.current(ctx, target.TargetCode(), trace); checkErr == nil && !stillAffected {
+			return false, nil
+		}
 		return false, err
 	}
 	return h.hold(ctx, target.TargetCode(), trace, snapshot)
 }
 
 func (h legacyMigrationHolder) holdForward(ctx context.Context, groupCode int64, nodes []map[string]interface{}, options *adapter.ForwardOptions, trace observation.RouteTrace) (bool, error) {
+	// Keep forward messages on the same cheap eligibility path as ordinary
+	// sends.  Serialization is only allowed once an active committing
+	// migration has actually claimed the target.
+	if _, _, affected, err := h.current(ctx, groupCode, trace); err != nil || !affected {
+		return false, err
+	}
 	snapshot, err := deliverysnapshot.FromForwardMessage(nodes, options)
 	if err != nil {
+		if _, _, stillAffected, checkErr := h.current(ctx, groupCode, trace); checkErr == nil && !stillAffected {
+			return false, nil
+		}
 		return false, err
 	}
 	return h.hold(ctx, groupCode, trace, snapshot)
