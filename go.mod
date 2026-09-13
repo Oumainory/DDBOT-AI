@@ -31,7 +31,7 @@ require (
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/gofrs/flock v0.8.1
 	github.com/google/uuid v1.6.0
-	github.com/guonaihong/gout v0.3.7
+	github.com/guonaihong/gout v0.3.11
 	github.com/hashicorp/golang-lru v0.5.4
 	github.com/huandu/xstrings v1.4.0
 	github.com/imdario/mergo v0.3.14
@@ -77,8 +77,6 @@ require (
 )
 
 require (
-	github.com/RomiChan/protobuf v0.1.1-0.20230204044148-2ed269a2e54d // indirect
-	github.com/RomiChan/syncx v0.0.0-20240418144900-b7402ffdebc7 // indirect
 	github.com/andybalholm/brotli v1.0.5
 	github.com/andybalholm/cascadia v1.3.1 // indirect
 	github.com/bytedance/sonic v1.9.2 // indirect
@@ -114,7 +112,7 @@ require (
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	golang.org/x/arch v0.3.0 // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
-	golang.org/x/sys v0.36.0 // indirect
+	golang.org/x/sys v0.36.0
 	golang.org/x/text v0.29.0
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
