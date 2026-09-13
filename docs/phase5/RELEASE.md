@@ -34,6 +34,10 @@ Full artifacts and the Full Docker image include `FFMPEG-PROVENANCE.txt` and
 the exact LGPL text from the pinned FFmpeg source commit. The BtbN build
 repository/tooling is MIT-licensed; that does not change the LGPL terms of the
 bundled FFmpeg executable or the licenses of its other third-party libraries.
+The release secret scan covers every extracted file. Some upstream FFmpeg
+builds retain test certificate/key marker strings; those matches are accepted
+only for the provenance-bound `bin/ffmpeg` (or `bin/ffmpeg.exe`) in a Full
+archive. Any matching path elsewhere remains a release-blocking finding.
 
 The release workflow supports a `workflow_dispatch` validation run. A manual
 run builds and smoke-tests the six archives and Docker image without pushing
