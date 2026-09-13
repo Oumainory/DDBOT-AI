@@ -9,6 +9,13 @@ ARG TARGETARCH=amd64
 
 WORKDIR /src
 COPY go.mod go.sum ./
+# The root module uses local replacements. Copy their module manifests before
+# downloading dependencies so the cacheable download step can resolve those
+# replacements without requiring the full source tree.
+COPY adapter/go.mod adapter/go.sum ./adapter/
+COPY bot/go.mod bot/go.sum ./bot/
+COPY lsp/eventbus/go.mod ./lsp/eventbus/
+COPY utils/qqlog/go.mod utils/qqlog/go.sum ./utils/qqlog/
 RUN go mod download
 COPY . .
 
