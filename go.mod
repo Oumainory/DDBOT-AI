@@ -16,13 +16,13 @@ replace github.com/Oumainory/DDBOT-AI/utils/qqlog => ./utils/qqlog
 
 require (
 	github.com/Jeffail/gabs/v2 v2.7.0
+	github.com/Oumainory/DDBOT-AI/adapter v0.0.0
+	github.com/Oumainory/DDBOT-AI/lsp/eventbus v0.0.0-20251103113836-bf7ecd344df7
+	github.com/Oumainory/DDBOT-AI/utils/qqlog v0.0.0
 	github.com/PuerkitoBio/goquery v1.8.1
 	github.com/Sora233/MiraiGo-Template v0.0.0-20250614161613-2c6ee7380548
 	github.com/Sora233/sliceutil v0.0.0-20210120043858-459badd8d882
 	github.com/alecthomas/kong v0.7.1
-	github.com/Oumainory/DDBOT-AI/adapter v0.0.0
-	github.com/Oumainory/DDBOT-AI/lsp/eventbus v0.0.0-20251103113836-bf7ecd344df7
-	github.com/Oumainory/DDBOT-AI/utils/qqlog v0.0.0
 	github.com/davecgh/go-spew v1.1.1
 	github.com/dimchansky/utfbom v1.1.1
 	github.com/ericpauley/go-quantize v0.0.0-20200331213906-ae555eb2afa4
@@ -77,9 +77,7 @@ require (
 )
 
 require (
-	github.com/RomiChan/protobuf v0.1.1-0.20230204044148-2ed269a2e54d // indirect
-	github.com/RomiChan/syncx v0.0.0-20240418144900-b7402ffdebc7 // indirect
-	github.com/andybalholm/brotli v1.0.5
+	github.com/andybalholm/brotli v1.2.3
 	github.com/andybalholm/cascadia v1.3.1 // indirect
 	github.com/bytedance/sonic v1.9.2 // indirect
 	github.com/chenzhuoyu/base64x v0.0.0-20221115062448-fe3a3abad311 // indirect
@@ -114,7 +112,7 @@ require (
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	golang.org/x/arch v0.3.0 // indirect
 	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
-	golang.org/x/sys v0.36.0 // indirect
+	golang.org/x/sys v0.36.0
 	golang.org/x/text v0.29.0
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
