@@ -113,6 +113,13 @@ jobs:
           cache: true
 
       - name: Run targeted race tests
+        # modern-go/gls (loaded by the unchanged legacy weibo initializer)
+        # uses GoID pointer arithmetic that Go 1.26's checkptr rejects before
+        # any test executes.  Keep the race detector enabled while disabling
+        # only that incompatible auxiliary check; the locked baseline and
+        # ordinary tests continue to exercise the unchanged legacy path.
+        env:
+          GODEBUG: checkptr=0
         run: >-
           go test -race -mod=readonly
           ./internal/idempotency
