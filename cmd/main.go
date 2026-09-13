@@ -40,7 +40,7 @@ func main() {
 	var cli struct {
 		// Keep the normal bot invocation as the default path while retaining
 		// explicit subcommands such as `admin reset-password`.
-		Admin        adminCommands `cmd:"" optional:"" help:"Local administrator maintenance"`
+		Admin        adminCommands `cmd:"" default:"withargs" help:"Local administrator maintenance"`
 		Play         bool          `optional:"" help:"运行play函数，适用于测试和开发"`
 		Debug        bool          `optional:"" help:"启动debug模式"`
 		Online       bool          `optional:"" help:"跳过等待bot上线，直接启动订阅系统（调试用）"`
