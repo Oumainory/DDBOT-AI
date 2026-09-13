@@ -32,15 +32,22 @@ import (
 	_ "net/http/pprof"
 )
 
-type adminCommands struct {
-	ResetPassword struct{} `cmd:"reset-password" help:"Reset the local administrator password"`
-}
-
 func main() {
+	// Keep the legacy invocation (flags or no arguments) independent from the
+	// maintenance command tree. Kong treats nested command structs as required
+	// command branches, which would otherwise make a normal bot start fail with
+	// an "expected admin"/"expected reset-password" parse error. The explicit
+	// two-word check preserves the existing `admin reset-password` entry point
+	// without changing the legacy root CLI contract.
+	if isAdminPasswordResetCommand(os.Args[1:]) {
+		if err := runAdminPasswordReset(); err != nil {
+			fmt.Fprintln(os.Stderr, "administrator password reset failed")
+			os.Exit(1)
+		}
+		return
+	}
+
 	var cli struct {
-		// Keep the normal bot invocation as the default path while retaining
-		// explicit subcommands such as `admin reset-password`.
-		Admin        adminCommands `cmd:"" default:"withargs" help:"Local administrator maintenance"`
 		Play         bool          `optional:"" help:"运行play函数，适用于测试和开发"`
 		Debug        bool          `optional:"" help:"启动debug模式"`
 		Online       bool          `optional:"" help:"跳过等待bot上线，直接启动订阅系统（调试用）"`
@@ -48,14 +55,7 @@ func main() {
 		Version      bool          `optional:"" xor:"c" short:"v" help:"打印版本信息"`
 		SyncBilibili bool          `optional:"" xor:"c" help:"同步b站帐号的关注，适用于更换或迁移b站帐号的时候"`
 	}
-	ctx := kong.Parse(&cli)
-	if ctx.Command() == "admin reset-password" {
-		if err := runAdminPasswordReset(); err != nil {
-			fmt.Fprintln(os.Stderr, "administrator password reset failed")
-			os.Exit(1)
-		}
-		return
-	}
+	kong.Parse(&cli)
 
 	if cli.Version {
 		fmt.Println("Product: DDBOT-AI")
@@ -128,6 +128,10 @@ func main() {
 	DDBOT.SetUpLog()
 
 	DDBOT.Run()
+}
+
+func isAdminPasswordResetCommand(args []string) bool {
+	return len(args) == 2 && args[0] == "admin" && args[1] == "reset-password"
 }
 
 func runAdminPasswordReset() error {
