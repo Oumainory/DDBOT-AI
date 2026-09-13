@@ -21,5 +21,24 @@ Full-only, listens internally on `0.0.0.0:15631`, and contains the same notices;
 Compose should publish only `127.0.0.1:15631:15631` or use a private proxy
 network. Native defaults remain `127.0.0.1:15631`.
 
+The authoritative pin is committed in [`release/ffmpeg.json`](../../release/ffmpeg.json):
+BtbN/FFmpeg-Builds `autobuild-2026-09-12-13-12`, FFmpeg
+`n9.0.1-29-gad500d59cb`, source commit
+`ad500d59cb6e0126add4fcb95afb4e2557c4292c`, `lgpl-static`, and the three
+target-specific asset URLs and SHA-256 digests. The workflow also downloads the
+provider's `checksums.sha256` and requires each committed digest to appear in
+that manifest. Repository Variables, when configured, are assertions and must
+match the committed pin; they cannot select a different artifact.
+
+Full artifacts and the Full Docker image include `FFMPEG-PROVENANCE.txt` and
+the exact LGPL text from the pinned FFmpeg source commit. The BtbN build
+repository/tooling is MIT-licensed; that does not change the LGPL terms of the
+bundled FFmpeg executable or the licenses of its other third-party libraries.
+
+The release workflow supports a `workflow_dispatch` validation run. A manual
+run builds and smoke-tests the six archives and Docker image without pushing
+an image or creating a GitHub Release. A real `release` event performs the
+same validation before publishing the pre-release assets and GHCR image.
+
 The only product tag in the V1 plan is the pre-release `v1.0.0-rc1`; a stable
 `v1.0.0` is intentionally out of scope until real deployment evidence exists.

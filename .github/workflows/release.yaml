@@ -3,6 +3,13 @@ name: DDBOT-AI Release
 on:
   release:
     types: [created]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Version label used for a non-publishing validation build"
+        required: true
+        default: v1.0.0-rc1
+        type: string
 
 permissions:
   contents: write
@@ -10,8 +17,11 @@ permissions:
 
 env:
   GO_VERSION: '1.26.2'
-  # These repository variables are deliberately required. The workflow must
-  # never silently download an unpinned third-party executable into a release.
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag || 'v1.0.0-rc1' }}
+  FFMPEG_METADATA: release/ffmpeg.json
+  # Repository variables remain optional compatibility wiring. When present,
+  # the pin job requires an exact match with the committed metadata; they can
+  # never select a different executable than the reviewed release/ffmpeg.json.
   FFMPEG_VERSION: ${{ vars.FFMPEG_VERSION }}
   FFMPEG_LICENSE_URL: ${{ vars.FFMPEG_LICENSE_URL }}
   FFMPEG_URL_LINUX_AMD64: ${{ vars.FFMPEG_URL_LINUX_AMD64 }}
@@ -22,8 +32,98 @@ env:
   FFMPEG_SHA256_WINDOWS_AMD64: ${{ vars.FFMPEG_SHA256_WINDOWS_AMD64 }}
 
 jobs:
+  pin:
+    name: Validate committed FFmpeg provenance
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      source_commit: ${{ steps.metadata.outputs.source_commit }}
+      provider: ${{ steps.metadata.outputs.provider }}
+      provider_release: ${{ steps.metadata.outputs.provider_release }}
+      license_variant: ${{ steps.metadata.outputs.license_variant }}
+      license_url: ${{ steps.metadata.outputs.license_url }}
+      license_text_url: ${{ steps.metadata.outputs.license_text_url }}
+      upstream_url: ${{ steps.metadata.outputs.upstream_url }}
+      build_provider_url: ${{ steps.metadata.outputs.build_provider_url }}
+      checksums_url: ${{ steps.metadata.outputs.checksums_url }}
+      linux_amd64_url: ${{ steps.metadata.outputs.linux_amd64_url }}
+      linux_amd64_sha256: ${{ steps.metadata.outputs.linux_amd64_sha256 }}
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify committed pin and upstream checksum manifest
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          meta="$FFMPEG_METADATA"
+          test -s "$meta"
+          provider="$(jq -er '.provider' "$meta")"
+          provider_release="$(jq -er '.provider_release' "$meta")"
+          version="$(jq -er '.ffmpeg_version' "$meta")"
+          source_commit="$(jq -er '.source_commit' "$meta")"
+          license_variant="$(jq -er '.license_variant' "$meta")"
+          license_url="$(jq -er '.license_url' "$meta")"
+          license_text_url="$(jq -er '.license_text_url' "$meta")"
+          upstream_url="$(jq -er '.upstream_url' "$meta")"
+          build_provider_url="$(jq -er '.build_provider_url' "$meta")"
+          checksums_url="$(jq -er '.checksums_url' "$meta")"
+          test "$provider" = 'BtbN/FFmpeg-Builds'
+          test "$provider_release" = 'autobuild-2026-09-12-13-12'
+          test "$version" = 'n9.0.1-29-gad500d59cb'
+          test "$source_commit" = 'ad500d59cb6e0126add4fcb95afb4e2557c4292c'
+          test "$license_variant" = 'lgpl-static'
+          test "$license_url" = 'https://github.com/FFmpeg/FFmpeg/blob/ad500d59cb6e0126add4fcb95afb4e2557c4292c/COPYING.LGPLv2.1'
+          test "$license_text_url" = 'https://raw.githubusercontent.com/FFmpeg/FFmpeg/ad500d59cb6e0126add4fcb95afb4e2557c4292c/COPYING.LGPLv2.1'
+
+          # If legacy repository variables are configured, they are only an
+          # assertion about the committed pin, never an alternate source.
+          [ -z "${FFMPEG_VERSION:-}" ] || test "$FFMPEG_VERSION" = "$version"
+          [ -z "${FFMPEG_LICENSE_URL:-}" ] || test "$FFMPEG_LICENSE_URL" = "$license_url"
+
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          curl --fail --location --silent --show-error "$checksums_url" -o "$tmp/checksums.sha256"
+          for target in linux/amd64 linux/arm64 windows/amd64; do
+            asset_url="$(jq -er --arg target "$target" '.assets[$target].url' "$meta")"
+            asset_sha="$(jq -er --arg target "$target" '.assets[$target].sha256' "$meta")"
+            asset_name="$(basename "$asset_url")"
+            listed_sha="$(awk -v name="$asset_name" '$2 == name {print $1; found=1} END {if (!found) exit 1}' "$tmp/checksums.sha256")"
+            test "$listed_sha" = "$asset_sha"
+            case "$target" in
+              linux/amd64)
+                [ -z "${FFMPEG_URL_LINUX_AMD64:-}" ] || test "$FFMPEG_URL_LINUX_AMD64" = "$asset_url"
+                [ -z "${FFMPEG_SHA256_LINUX_AMD64:-}" ] || test "$FFMPEG_SHA256_LINUX_AMD64" = "$asset_sha"
+                echo "linux_amd64_url=$asset_url" >> "$GITHUB_OUTPUT"
+                echo "linux_amd64_sha256=$asset_sha" >> "$GITHUB_OUTPUT"
+                ;;
+              linux/arm64)
+                [ -z "${FFMPEG_URL_LINUX_ARM64:-}" ] || test "$FFMPEG_URL_LINUX_ARM64" = "$asset_url"
+                [ -z "${FFMPEG_SHA256_LINUX_ARM64:-}" ] || test "$FFMPEG_SHA256_LINUX_ARM64" = "$asset_sha"
+                ;;
+              windows/amd64)
+                [ -z "${FFMPEG_URL_WINDOWS_AMD64:-}" ] || test "$FFMPEG_URL_WINDOWS_AMD64" = "$asset_url"
+                [ -z "${FFMPEG_SHA256_WINDOWS_AMD64:-}" ] || test "$FFMPEG_SHA256_WINDOWS_AMD64" = "$asset_sha"
+                ;;
+            esac
+          done
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
+          echo "provider=$provider" >> "$GITHUB_OUTPUT"
+          echo "provider_release=$provider_release" >> "$GITHUB_OUTPUT"
+          echo "license_variant=$license_variant" >> "$GITHUB_OUTPUT"
+          echo "license_url=$license_url" >> "$GITHUB_OUTPUT"
+          echo "license_text_url=$license_text_url" >> "$GITHUB_OUTPUT"
+          echo "upstream_url=$upstream_url" >> "$GITHUB_OUTPUT"
+          echo "build_provider_url=$build_provider_url" >> "$GITHUB_OUTPUT"
+          echo "checksums_url=$checksums_url" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.flavor }} (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: pin
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -59,67 +159,103 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Build archive
+      - name: Build and validate archive
         env:
           CGO_ENABLED: '0'
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
           FLAVOR: ${{ matrix.flavor }}
         shell: bash
         run: |
           set -euo pipefail
-          case "$GOOS/$GOARCH" in
-            linux/amd64) ffmpeg_url="$FFMPEG_URL_LINUX_AMD64"; ffmpeg_sha="$FFMPEG_SHA256_LINUX_AMD64" ;;
-            linux/arm64) ffmpeg_url="$FFMPEG_URL_LINUX_ARM64"; ffmpeg_sha="$FFMPEG_SHA256_LINUX_ARM64" ;;
-            windows/amd64) ffmpeg_url="$FFMPEG_URL_WINDOWS_AMD64"; ffmpeg_sha="$FFMPEG_SHA256_WINDOWS_AMD64" ;;
-            *) echo "unsupported release target" >&2; exit 1 ;;
-          esac
-          root="package/ddbot-ai-${RELEASE_TAG}-${GOOS}-${GOARCH}-${FLAVOR}"
+          meta="$FFMPEG_METADATA"
+          target="$GOOS/$GOARCH"
+          release_tag="$RELEASE_TAG"
+          root="package/ddbot-ai-${release_tag}-${GOOS}-${GOARCH}-${FLAVOR}"
           mkdir -p "$root/bin"
           suffix=""
           archive_ext="tar.gz"
           if [ "$GOOS" = "windows" ]; then suffix=".exe"; archive_ext="zip"; fi
-          go build -trimpath -ldflags "-s -w -X github.com/Oumainory/DDBOT-AI/lsp.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ) -X github.com/Oumainory/DDBOT-AI/lsp.CommitId=${GITHUB_SHA} -X github.com/Oumainory/DDBOT-AI/internal/buildinfo.Version=${RELEASE_TAG} -X github.com/Oumainory/DDBOT-AI/internal/buildinfo.Commit=${GITHUB_SHA}" -o "$root/bin/ddbot-ai${suffix}" ./cmd
+          go build -trimpath -ldflags "-s -w -X github.com/Oumainory/DDBOT-AI/lsp.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ) -X github.com/Oumainory/DDBOT-AI/lsp.CommitId=${GITHUB_SHA} -X github.com/Oumainory/DDBOT-AI/internal/buildinfo.Version=${release_tag} -X github.com/Oumainory/DDBOT-AI/internal/buildinfo.Commit=${GITHUB_SHA}" -o "$root/bin/ddbot-ai${suffix}" ./cmd
           cp README.md LICENSE NOTICE THIRD_PARTY_NOTICES.md "$root/"
           cat > "$root/BUILD-METADATA.txt" <<EOF
           product=DDBOT-AI
-          version=${RELEASE_TAG}
+          version=${release_tag}
           commit=${GITHUB_SHA}
           source=https://github.com/Oumainory/DDBOT-AI
           license=AGPL-3.0
           flavor=${FLAVOR}
           EOF
+
           if [ "$FLAVOR" = "full" ]; then
-            test -n "$FFMPEG_VERSION" -a -n "$FFMPEG_LICENSE_URL" -a -n "$ffmpeg_url" -a -n "$ffmpeg_sha"
+            ffmpeg_url="$(jq -er --arg target "$target" '.assets[$target].url' "$meta")"
+            ffmpeg_sha="$(jq -er --arg target "$target" '.assets[$target].sha256' "$meta")"
+            checksums_url="$(jq -er '.checksums_url' "$meta")"
+            ffmpeg_version="$(jq -er '.ffmpeg_version' "$meta")"
+            source_commit="$(jq -er '.source_commit' "$meta")"
+            license_url="$(jq -er '.license_url' "$meta")"
+            license_text_url="$(jq -er '.license_text_url' "$meta")"
             tmp="$(mktemp -d)"
+            trap 'rm -rf "$tmp"' EXIT
+            curl --fail --location --silent --show-error "$checksums_url" -o "$tmp/checksums.sha256"
+            asset_name="$(basename "$ffmpeg_url")"
+            listed_sha="$(awk -v name="$asset_name" '$2 == name {print $1; found=1} END {if (!found) exit 1}' "$tmp/checksums.sha256")"
+            test "$listed_sha" = "$ffmpeg_sha"
             curl --fail --location --silent --show-error "$ffmpeg_url" -o "$tmp/ffmpeg-download"
             echo "$ffmpeg_sha  $tmp/ffmpeg-download" | sha256sum -c -
             mkdir -p "$tmp/unpacked"
             case "$ffmpeg_url" in
               *.zip) unzip -q "$tmp/ffmpeg-download" -d "$tmp/unpacked" ;;
               *.tar.gz|*.tgz) tar -xzf "$tmp/ffmpeg-download" -C "$tmp/unpacked" ;;
-              *) cp "$tmp/ffmpeg-download" "$tmp/unpacked/ffmpeg" ;;
+              *.tar.xz) tar -xJf "$tmp/ffmpeg-download" -C "$tmp/unpacked" ;;
+              *) echo "unsupported FFmpeg archive" >&2; exit 1 ;;
             esac
             ffmpeg_path="$(find "$tmp/unpacked" -type f \( -name ffmpeg -o -name ffmpeg.exe \) -print -quit)"
             test -n "$ffmpeg_path"
-            cp "$ffmpeg_path" "$root/bin/$(basename "$ffmpeg_path")"
-            if [ "$GOOS" != "windows" ]; then chmod 0755 "$root/bin/$(basename "$ffmpeg_path")"; fi
+            file_output="$(file "$ffmpeg_path")"
+            case "$target" in
+              linux/amd64) echo "$file_output" | grep -Eiq 'x86-64|amd64' ;;
+              linux/arm64) echo "$file_output" | grep -Eiq 'aarch64|arm64' ;;
+              windows/amd64) echo "$file_output" | grep -Eiq 'PE32\+.*x86-64|x86-64' ;;
+            esac
+            install -m 0755 "$ffmpeg_path" "$root/bin/$(basename "$ffmpeg_path")"
+            if [ "$target" = "linux/amd64" ]; then
+              version_check="$("$root/bin/$(basename "$ffmpeg_path")" -version 2>&1 | head -n 1)"
+            else
+              version_check="$(strings "$ffmpeg_path" | grep -E -m1 'n9\.0\.1|ad500d59cb' || true)"
+              test -n "$version_check"
+            fi
+            curl --fail --location --silent --show-error "$license_text_url" -o "$root/FFMPEG-LGPL-2.1.txt"
+            test -s "$root/FFMPEG-LGPL-2.1.txt"
             cat > "$root/FFMPEG-PROVENANCE.txt" <<EOF
-          version=${FFMPEG_VERSION}
-          source=${ffmpeg_url}
-          sha256=${ffmpeg_sha}
-          license=${FFMPEG_LICENSE_URL}
+          provider=BtbN/FFmpeg-Builds
+          provider_release=$(jq -er '.provider_release' "$meta")
+          ffmpeg_version=${ffmpeg_version}
+          ffmpeg_source_commit=${source_commit}
+          variant=$(jq -er '.license_variant' "$meta")
+          asset_url=${ffmpeg_url}
+          asset_sha256=${ffmpeg_sha}
+          upstream_checksums=${checksums_url}
+          license_url=${license_url}
+          upstream=https://ffmpeg.org/
+          build_provider=https://github.com/BtbN/FFmpeg-Builds
           runtime=external-executable
+          version_check=${version_check}
           EOF
           else
             cat > "$root/FFMPEG-PROVENANCE.txt" <<EOF
+          provider=BtbN/FFmpeg-Builds
+          provider_release=$(jq -er '.provider_release' "$meta")
+          ffmpeg_version=$(jq -er '.ffmpeg_version' "$meta")
+          ffmpeg_source_commit=$(jq -er '.source_commit' "$meta")
+          variant=$(jq -er '.license_variant' "$meta")
           flavor=lite
           ffmpeg=bundled=false
           resolution=explicit-config-path-then-PATH
           EOF
           fi
-          archive="ddbot-ai-${RELEASE_TAG}-${GOOS}-${GOARCH}-${FLAVOR}.${archive_ext}"
+
+          archive="ddbot-ai-${release_tag}-${GOOS}-${GOARCH}-${FLAVOR}.${archive_ext}"
           if [ "$GOOS" = "windows" ]; then
             (cd package && zip -qr "../$archive" "$(basename "$root")")
           else
@@ -130,44 +266,91 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: package-${{ matrix.goos }}-${{ matrix.goarch }}-${{ matrix.flavor }}
-          path: ddbot-ai-${{ github.event.release.tag_name }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ matrix.flavor }}.*
+          path: ddbot-ai-${{ env.RELEASE_TAG }}-${{ matrix.goos }}-${{ matrix.goarch }}-${{ matrix.flavor }}.*
           if-no-files-found: error
 
   docker-full:
-    name: Build and publish Full Docker image
+    name: Build and smoke-test Full Docker image
+    needs: pin
     runs-on: ubuntu-latest
     steps:
       - name: Check out release commit
         uses: actions/checkout@v4
 
-      - name: Validate audited FFmpeg pin
+      - name: Build Full image locally
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ghcr.io/oumainory/ddbot-ai:${{ env.RELEASE_TAG }}
+          build-args: |
+            RELEASE_VERSION=${{ env.RELEASE_TAG }}
+            RELEASE_COMMIT=${{ github.sha }}
+            FFMPEG_PROVIDER=${{ needs.pin.outputs.provider }}
+            FFMPEG_PROVIDER_RELEASE=${{ needs.pin.outputs.provider_release }}
+            FFMPEG_VERSION=${{ needs.pin.outputs.version }}
+            FFMPEG_SOURCE_COMMIT=${{ needs.pin.outputs.source_commit }}
+            FFMPEG_VARIANT=${{ needs.pin.outputs.license_variant }}
+            FFMPEG_URL=${{ needs.pin.outputs.linux_amd64_url }}
+            FFMPEG_SHA256=${{ needs.pin.outputs.linux_amd64_sha256 }}
+            FFMPEG_CHECKSUMS_URL=${{ needs.pin.outputs.checksums_url }}
+            FFMPEG_LICENSE_URL=${{ needs.pin.outputs.license_url }}
+            FFMPEG_LICENSE_TEXT_URL=${{ needs.pin.outputs.license_text_url }}
+
+      - name: Verify bundled FFmpeg
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$FFMPEG_VERSION" -a -n "$FFMPEG_LICENSE_URL" -a -n "$FFMPEG_URL_LINUX_AMD64" -a -n "$FFMPEG_SHA256_LINUX_AMD64"
+          image="ghcr.io/oumainory/ddbot-ai:${RELEASE_TAG}"
+          docker run --rm --entrypoint /usr/local/bin/ffmpeg "$image" -version | grep -E 'n9\.0\.1|ad500d59cb'
 
-      - name: Log in to GHCR
+      - name: Smoke-test ddbot-ai healthz
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/oumainory/ddbot-ai:${RELEASE_TAG}"
+          work="$(mktemp -d)"
+          container="ddbot-ai-release-smoke"
+          cleanup() {
+            docker rm -f "$container" >/dev/null 2>&1 || true
+            rm -rf "$work"
+          }
+          trap cleanup EXIT
+          cat > "$work/application.yaml" <<'EOF'
+          admin:
+            enable: true
+            addr: "0.0.0.0:15631"
+          EOF
+          docker run -d --name "$container" -p 18080:15631 \
+            -e DDBOT_AI_RUNTIME_MODE=docker \
+            -e DDBOT_AI_HTTP_LISTEN=0.0.0.0:15631 \
+            -e DDBOT_AI_PLATFORM_DB=/data/release-smoke.sqlite \
+            -v "$work/application.yaml:/data/application.yaml:ro" \
+            "$image" --online >/dev/null
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18080/healthz >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+
+      - name: Log in to GHCR for a real release
+        if: ${{ github.event_name == 'release' }}
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Full image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ghcr.io/oumainory/ddbot-ai:${{ github.event.release.tag_name }}
-          build-args: |
-            FFMPEG_VERSION=${{ env.FFMPEG_VERSION }}
-            FFMPEG_URL=${{ env.FFMPEG_URL_LINUX_AMD64 }}
-            FFMPEG_SHA256=${{ env.FFMPEG_SHA256_LINUX_AMD64 }}
-            FFMPEG_LICENSE_URL=${{ env.FFMPEG_LICENSE_URL }}
+      - name: Push Full image for a real release
+        if: ${{ github.event_name == 'release' }}
+        shell: bash
+        run: docker push "ghcr.io/oumainory/ddbot-ai:${RELEASE_TAG}"
 
-  publish:
-    name: Publish checksummed archives
-    needs: build
+  validate:
+    name: Validate archives, licenses and secret boundaries
+    needs: [pin, build, docker-full]
     runs-on: ubuntu-latest
     steps:
       - name: Download release packages
@@ -177,17 +360,91 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Create SHA256SUMS
+      - name: Inspect every Full/Lite archive
         shell: bash
         run: |
           set -euo pipefail
           cd release-assets
+          work="$(mktemp -d)"
+          cleanup() { rm -rf "$work"; }
+          trap cleanup EXIT
+          count=0
+          for archive in ddbot-ai-*; do
+            [ -f "$archive" ] || continue
+            count=$((count + 1))
+            extract="$work/$count"
+            mkdir -p "$extract"
+            case "$archive" in
+              *.tar.gz) tar -xzf "$archive" -C "$extract" ;;
+              *.zip) unzip -q "$archive" -d "$extract" ;;
+              *) echo "unexpected archive: $archive" >&2; exit 1 ;;
+            esac
+            package_root="$(find "$extract" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+            test -n "$package_root"
+            test -f "$package_root/LICENSE"
+            test -f "$package_root/NOTICE"
+            test -f "$package_root/THIRD_PARTY_NOTICES.md"
+            test -f "$package_root/BUILD-METADATA.txt"
+            test -f "$package_root/FFMPEG-PROVENANCE.txt"
+            if [[ "$archive" == *-windows-* ]]; then
+              test -f "$package_root/bin/ddbot-ai.exe"
+            else
+              test -f "$package_root/bin/ddbot-ai"
+            fi
+            if find "$package_root" \( -name '.env' -o -name '*.db' -o -name '*.key' -o -name 'node_modules' \) -print -quit | grep -q .; then
+              echo "forbidden file in $archive" >&2
+              exit 1
+            fi
+            if grep -R -a -E 'BEGIN [A-Z ]+PRIVATE KEY|(^|[^A-Z])API_KEY=|(^|[^A-Z])TOKEN=|(^|[^A-Z])COOKIE=|(^|[^A-Z])MASTER_KEY=|test-secret-do-not-leak|C:\\Users\\hhffj|/home/[A-Za-z]' "$package_root" >/dev/null; then
+              echo "possible secret or developer path in $archive" >&2
+              exit 1
+            fi
+            if [[ "$archive" == *-full.* ]]; then
+              test -f "$package_root/FFMPEG-LGPL-2.1.txt"
+              ffmpeg_bin="$(find "$package_root/bin" -maxdepth 1 -type f \( -name ffmpeg -o -name ffmpeg.exe \) -print -quit)"
+              test -n "$ffmpeg_bin"
+              grep -q 'ffmpeg_version=n9.0.1-29-gad500d59cb' "$package_root/FFMPEG-PROVENANCE.txt"
+              if [[ "$archive" == *-linux-amd64-full.* ]]; then
+                "$ffmpeg_bin" -version | grep -E 'n9\.0\.1|ad500d59cb' >/dev/null
+              else
+                strings "$ffmpeg_bin" | grep -E 'n9\.0\.1|ad500d59cb' >/dev/null
+              fi
+            else
+              if find "$package_root/bin" -maxdepth 1 -type f \( -name ffmpeg -o -name ffmpeg.exe \) -print -quit | grep -q .; then
+                echo "Lite archive contains FFmpeg" >&2
+                exit 1
+              fi
+              grep -q 'ffmpeg=bundled=false' "$package_root/FFMPEG-PROVENANCE.txt"
+            fi
+          done
+          test "$count" -eq 6
           sha256sum ddbot-ai-* > SHA256SUMS
+
+      - name: Upload validated release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: validated-release-assets
+          path: |
+            release-assets/ddbot-ai-*
+            release-assets/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    name: Publish checksummed pre-release assets
+    if: ${{ github.event_name == 'release' }}
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download validated assets
+        uses: actions/download-artifact@v4
+        with:
+          name: validated-release-assets
+          path: release-assets
 
       - name: Publish assets
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           prerelease: true
           files: release-assets/*
           generate_release_notes: true

@@ -1,0 +1,33 @@
+{
+  "provider": "BtbN/FFmpeg-Builds",
+  "provider_release": "autobuild-2026-09-12-13-12",
+  "release_tag": "autobuild-2026-09-12-13-12",
+  "ffmpeg_version": "n9.0.1-29-gad500d59cb",
+  "source_commit": "ad500d59cb6e0126add4fcb95afb4e2557c4292c",
+  "license_variant": "lgpl-static",
+  "license_url": "https://github.com/FFmpeg/FFmpeg/blob/ad500d59cb6e0126add4fcb95afb4e2557c4292c/COPYING.LGPLv2.1",
+  "license_text_url": "https://raw.githubusercontent.com/FFmpeg/FFmpeg/ad500d59cb6e0126add4fcb95afb4e2557c4292c/COPYING.LGPLv2.1",
+  "upstream_url": "https://ffmpeg.org/",
+  "build_provider_url": "https://github.com/BtbN/FFmpeg-Builds",
+  "checksums_url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-12-13-12/checksums.sha256",
+  "assets": {
+    "linux/amd64": {
+      "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-12-13-12/ffmpeg-n9.0.1-29-gad500d59cb-linux64-lgpl-9.0.tar.xz",
+      "sha256": "755481ce50f41b24c1fa2dba5323600c314ec6396d42724489a8de68356a6880",
+      "archive": "tar.xz",
+      "executable": "ffmpeg"
+    },
+    "linux/arm64": {
+      "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-12-13-12/ffmpeg-n9.0.1-29-gad500d59cb-linuxarm64-lgpl-9.0.tar.xz",
+      "sha256": "df480b8b9e086d12fcaee39fb8f3ebd7bcd81a7181e4d6aff4e5348700fa5e81",
+      "archive": "tar.xz",
+      "executable": "ffmpeg"
+    },
+    "windows/amd64": {
+      "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-12-13-12/ffmpeg-n9.0.1-29-gad500d59cb-win64-lgpl-9.0.zip",
+      "sha256": "b6a611f99f023125a7581883199c2afab53dc67e7e649faec14c43e5cee2d93d",
+      "archive": "zip",
+      "executable": "ffmpeg.exe"
+    }
+  }
+}

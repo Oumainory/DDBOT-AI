@@ -24,19 +24,31 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
 FROM debian:bookworm-slim
 
 ARG FFMPEG_VERSION
+ARG FFMPEG_PROVIDER
+ARG FFMPEG_PROVIDER_RELEASE
+ARG FFMPEG_SOURCE_COMMIT
+ARG FFMPEG_VARIANT
 ARG FFMPEG_URL
 ARG FFMPEG_SHA256
+ARG FFMPEG_CHECKSUMS_URL
 ARG FFMPEG_LICENSE_URL
+ARG FFMPEG_LICENSE_TEXT_URL
 
 RUN set -eux; \
+    test -n "$FFMPEG_PROVIDER"; \
+    test -n "$FFMPEG_PROVIDER_RELEASE"; \
     test -n "$FFMPEG_VERSION"; \
+    test -n "$FFMPEG_SOURCE_COMMIT"; \
+    test "$FFMPEG_VARIANT" = "lgpl-static"; \
     test -n "$FFMPEG_URL"; \
     test -n "$FFMPEG_SHA256"; \
+    test -n "$FFMPEG_CHECKSUMS_URL"; \
     test -n "$FFMPEG_LICENSE_URL"; \
+    test -n "$FFMPEG_LICENSE_TEXT_URL"; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl tar unzip xz-utils; \
     rm -rf /var/lib/apt/lists/*; \
-    mkdir -p /tmp/ffmpeg /usr/local/bin; \
+    mkdir -p /tmp/ffmpeg /usr/local/bin /app; \
     curl --fail --location --silent --show-error "$FFMPEG_URL" -o /tmp/ffmpeg/archive; \
     echo "$FFMPEG_SHA256  /tmp/ffmpeg/archive" | sha256sum -c -; \
     case "$FFMPEG_URL" in \
@@ -48,6 +60,21 @@ RUN set -eux; \
     ffmpeg_path="$(find /tmp/ffmpeg/unpacked -type f \( -name ffmpeg -o -name ffmpeg.exe \) -print -quit)"; \
     test -n "$ffmpeg_path"; \
     install -m 0755 "$ffmpeg_path" /usr/local/bin/ffmpeg; \
+    curl --fail --location --silent --show-error "$FFMPEG_LICENSE_TEXT_URL" -o /app/FFMPEG-LGPL-2.1.txt; \
+    test -s /app/FFMPEG-LGPL-2.1.txt; \
+    printf '%s\n' \
+      "provider=$FFMPEG_PROVIDER" \
+      "provider_release=$FFMPEG_PROVIDER_RELEASE" \
+      "ffmpeg_version=$FFMPEG_VERSION" \
+      "ffmpeg_source_commit=$FFMPEG_SOURCE_COMMIT" \
+      "variant=$FFMPEG_VARIANT" \
+      "asset_url=$FFMPEG_URL" \
+      "asset_sha256=$FFMPEG_SHA256" \
+      "upstream_checksums=$FFMPEG_CHECKSUMS_URL" \
+      "license_url=$FFMPEG_LICENSE_URL" \
+      "upstream=https://ffmpeg.org/" \
+      "build_provider=https://github.com/BtbN/FFmpeg-Builds" \
+      "runtime=external-executable" > /app/FFMPEG-PROVENANCE.txt; \
     rm -rf /tmp/ffmpeg
 
 WORKDIR /data
