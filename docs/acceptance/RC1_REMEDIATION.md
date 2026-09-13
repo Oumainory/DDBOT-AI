@@ -30,3 +30,13 @@ record and does not move `main`, `phase5-baseline`, or `v1.0.0-rc1`.
   re-audit accepts this candidate.
 - Legacy collection, BuntDB subscriptions, rendering, and normal Messenger
   delivery remain authoritative. New failure paths are fail-open for Legacy.
+
+## Verification exception
+
+The targeted Linux race job deliberately omits the root `admin` package. Its
+unchanged import graph starts the legacy `lsp/weibo` initializer, which calls
+`modern-go/gls` GoID pointer arithmetic and aborts under Go 1.26.2's
+checkptr instrumentation before tests execute. The root `admin` package still
+runs in the full non-race and locked-baseline gates; the targeted race job
+covers the independently runnable Phase 5 packages and does not weaken the
+product runtime or compatibility checks.
