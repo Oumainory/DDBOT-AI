@@ -3,11 +3,14 @@ package admin
 import (
 	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/Oumainory/DDBOT-AI/internal/idempotency"
 	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
 )
 
@@ -78,5 +81,68 @@ func TestReadLegacyJSONBodyRejectsOverLimitAndTrailingValues(t *testing.T) {
 	trailing := httptest.NewRequest(http.MethodPost, "/api/v1/subs/add", bytes.NewReader([]byte(`{"ok":true}{"extra":true}`)))
 	if _, err := readLegacyJSONBody(trailing); err == nil {
 		t.Fatal("multiple legacy JSON values unexpectedly accepted")
+	}
+}
+
+type legacyBodyMustNotBeRead struct{}
+
+func (legacyBodyMustNotBeRead) Read([]byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
+}
+
+func (legacyBodyMustNotBeRead) Close() error { return nil }
+
+type countingLegacyIdempotencyStore struct {
+	*idempotency.MemoryStore
+	beginCalls int
+}
+
+func (s *countingLegacyIdempotencyStore) BeginCommand(principal, key, command string, fingerprint idempotency.Fingerprint, now time.Time) (idempotency.Record, idempotency.Outcome, error) {
+	s.beginCalls++
+	return s.MemoryStore.BeginCommand(principal, key, command, fingerprint, now)
+}
+
+func TestLegacySubscriptionMutationsArePostOnlyAtHTTPBoundary(t *testing.T) {
+	ctx := context.Background()
+	store, err := platformdb.Open(ctx, platformdb.Config{Path: filepath.Join(t.TempDir(), "method-gate.sqlite")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	countingStore := &countingLegacyIdempotencyStore{MemoryStore: idempotency.NewMemoryStore(time.Hour)}
+	server := &Server{legacyIdempotency: countingStore}
+	mux := http.NewServeMux()
+	mux.Handle("/api/v1/subs/add", server.withAuth(server.handleAddSub))
+	mux.Handle("/api/v1/subs/remove", server.withAuth(server.handleRemoveSub))
+
+	for _, endpoint := range []string{"/api/v1/subs/add", "/api/v1/subs/remove"} {
+		for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodHead} {
+			req := httptest.NewRequest(method, endpoint, legacyBodyMustNotBeRead{})
+			req.Header.Set("Idempotency-Key", "method-gate-"+method)
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, req)
+			if response.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("%s %s status=%d, want 405", method, endpoint, response.Code)
+			}
+			if response.Header().Get("Allow") != http.MethodPost {
+				t.Fatalf("%s %s Allow=%q, want POST", method, endpoint, response.Header().Get("Allow"))
+			}
+		}
+	}
+	if countingStore.beginCalls != 0 {
+		t.Fatalf("method-rejected requests claimed %d idempotency records", countingStore.beginCalls)
+	}
+
+	options := httptest.NewRecorder()
+	mux.ServeHTTP(options, httptest.NewRequest(http.MethodOptions, "/api/v1/subs/add", legacyBodyMustNotBeRead{}))
+	if options.Code != http.StatusOK {
+		t.Fatalf("OPTIONS status=%d, want middleware preflight 200", options.Code)
+	}
+	post := httptest.NewRecorder()
+	postRequest := httptest.NewRequest(http.MethodPost, "/api/v1/subs/add", bytes.NewReader([]byte(`{"site":"unsupported","id":1,"type":"dynamic","groupCode":779}`)))
+	postRequest.Header.Set("Idempotency-Key", "method-gate-post")
+	mux.ServeHTTP(post, postRequest)
+	if post.Code == http.StatusMethodNotAllowed || countingStore.beginCalls != 1 {
+		t.Fatalf("POST status=%d idempotency claims=%d, want handler execution with one claim", post.Code, countingStore.beginCalls)
 	}
 }

@@ -60,3 +60,25 @@ RC1, or introduce a new migration.
 F-008 remains intentionally conservative: resolving an operator feedback item
 does not erase a known important false-drop from the quality evidence for that
 classifier release; a new release starts its own evidence set.
+
+## Final RC2 blocker closure
+
+The rejected `152b636` candidate exposed two remaining blockers and one minor
+response issue. The closure below is a new candidate change; the historical
+RC1/RC2 findings above remain unchanged.
+
+| Finding | Disposition | Closure evidence |
+| --- | --- | --- |
+| F-002 method gate | Fixed | The real `/api/v1/subs/add` and `/api/v1/subs/remove` handlers reject every non-POST method with `405` and `Allow: POST` before reading the body or claiming idempotency. Existing `withAuth` continues to terminate `OPTIONS` preflight. Router-level tests cover GET/PUT/PATCH/DELETE/HEAD, no body read, no claim, and preflight. |
+| F-003 approval atomicity | Fixed | `Phase5Repository.CreateEnforceApprovalIfReady` starts one SQLite transaction, computes current-release readiness, checks emergency state, resolves the profile and policy/profile digests, serializes canonical server-side evidence, revokes incompatible approvals, and inserts the new approval before commit. The handler no longer performs a readiness read or read-back outside that command. |
+| N-003 approval read-back | Fixed | The atomic command returns the committed `EnforceApprovalRecord` directly. The handler no longer ignores a `ValidEnforceApproval` error or reports audit success from a failed read-back. |
+| F-010 precedence proof | Proven | Production `evaluateEnforceRoute` integration tests cover Global DROP overridden by Target PASS, Global PASS overridden by Subscription DROP, durable Source/Target/Subscription IDs, and missing Source/Target/Subscription contexts failing open as `ambiguous_route`. |
+| N-001 policy mutation race | Fixed | Existing transaction-scoped `SavePolicy`/`SaveProfile` guards remain unchanged and pass regression coverage. |
+| N-002 race limitation | Accepted limitation | The Linux targeted race job remains the authoritative coverage for runnable Phase 5 packages; the root Legacy package retains the documented Go 1.26.2 `modern-go/gls` checkptr baseline exception. |
+| F-011 third-party inventory | Deferred minor | Unchanged from the prior remediation; pinned release provenance and notices remain authoritative. |
+
+The approval command's readiness evidence is never taken from the request and
+is not computed in a transaction outside the insert. A concurrent release or
+readiness mutation therefore serializes before or after the command; it cannot
+produce an approval whose release, policy/profile digest, and evidence belong
+to different durable states.

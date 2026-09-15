@@ -11,7 +11,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -475,36 +474,7 @@ func (s *Server) enforcePolicyFromOverride(ctx context.Context, value platformdb
 		}
 		profile = loaded
 	}
-	if value.DefaultAction != "" && value.DefaultAction != policy.ActionInherit {
-		profile.DefaultAction = value.DefaultAction
-	}
-	if profile.CategoryActions == nil {
-		profile.CategoryActions = make(map[domain.Category]policy.Action)
-	}
-	for key, action := range value.CategoryActions {
-		if action != policy.ActionInherit {
-			profile.CategoryActions[domain.Category(key)] = action
-		}
-	}
-	if profile.TagActions == nil {
-		profile.TagActions = make(map[string]policy.Action)
-	}
-	for key, action := range value.TagActions {
-		if action != policy.ActionInherit {
-			profile.TagActions[key] = action
-		}
-	}
-	if err := profile.Validate(); err != nil {
-		return policy.EffectivePolicy{}, policy.Profile{}, err
-	}
-	threshold := 0.90
-	if value.Threshold != nil {
-		threshold = *value.Threshold
-	}
-	if math.IsNaN(threshold) || math.IsInf(threshold, 0) || threshold < 0.90 || threshold > 1 {
-		return policy.EffectivePolicy{}, policy.Profile{}, errors.New("policy: enforce threshold is outside the safe range")
-	}
-	return policy.EffectivePolicy{Mode: policy.ModeEnforce, Threshold: threshold, CategoryActions: profile.CategoryActions, TagActions: profile.TagActions}, profile, nil
+	return policy.ResolveEnforcePolicy(profile, value.Threshold, value.DefaultAction, value.CategoryActions, value.TagActions)
 }
 
 // validateEnforcePolicy is the Phase 5 activation gate.  It is intentionally
@@ -555,47 +525,32 @@ func (s *Server) handleEnforceApprove(w http.ResponseWriter, r *http.Request) {
 	}
 	principal, _ := PrincipalFromContext(r.Context())
 	s.executeDomainCommand(w, r, "enforce_approve", body, func() (int, apiEnvelope) {
-		readiness, readinessErr := s.aiRepository.EnforceReadiness(r.Context())
-		if readinessErr != nil {
-			return http.StatusServiceUnavailable, apiEnvelope{Error: &apiError{Code: "enforce_readiness_unavailable", Message: "Enforce readiness is unavailable"}}
-		}
-		if !readiness.Ready {
-			return http.StatusUnprocessableEntity, apiEnvelope{Error: &apiError{Code: "enforce_not_ready", Message: "Enforce readiness gates have not passed"}, Data: readiness}
-		}
-		// EnforceReadiness returns the release that all metrics were measured
-		// against. Use that identity directly; a second lookup is only a
-		// presentation/validation step and must never silently pair a newer
-		// release with older readiness evidence.
-		if strings.TrimSpace(readiness.CurrentReleaseID) == "" {
-			return http.StatusUnprocessableEntity, apiEnvelope{Error: &apiError{Code: "enforce_not_ready", Message: "an active classifier release is required"}}
-		}
-		releaseID := readiness.CurrentReleaseID
-		if request.ClassifierReleaseID != "" && request.ClassifierReleaseID != releaseID {
-			return http.StatusConflict, apiEnvelope{Error: &apiError{Code: "enforce_not_ready", Message: "classifier release is not current"}}
-		}
 		valueForApproval := platformdb.AIPolicyOverrideRecord{ProfileID: request.ProfileID, Threshold: request.Threshold, DefaultAction: request.DefaultAction, CategoryActions: make(map[domain.Category]policy.Action), TagActions: request.TagActions}
 		for key, action := range request.CategoryActions {
 			valueForApproval.CategoryActions[domain.Category(key)] = action
 		}
-		effective, profile, policyErr := s.enforcePolicyFromOverride(r.Context(), valueForApproval)
-		if policyErr != nil {
-			return s.phase5ErrorEnvelope(policyErr)
-		}
-		policyDigest, profileDigest := policy.Digest(effective), policy.ProfileDigest(profile)
-		if request.PolicyDigest != "" && request.PolicyDigest != policyDigest || request.ProfileDigest != "" && request.ProfileDigest != profileDigest {
-			return http.StatusConflict, apiEnvelope{Error: &apiError{Code: "enforce_not_ready", Message: "policy or profile digest is stale"}}
-		}
-		// Never persist caller-supplied readiness evidence: it can be stale or
-		// describe a different release. The approval records the canonical
-		// server-side snapshot that just passed the current-release gate.
-		evidence, _ := json.Marshal(readiness)
 		id := "approval_" + strconv.FormatInt(s.now().UTC().UnixNano(), 10)
-		value := platformdb.EnforceApprovalRecord{ID: id, ClassifierReleaseID: releaseID, PolicyDigest: policyDigest, ProfileDigest: profileDigest, ReadinessEvidenceJSON: evidence, ApprovedAt: s.now(), ApprovedBy: principal.AdminID, Reason: request.Reason, CreatedAt: s.now()}
-		if err := s.phase5Repository.SaveEnforceApproval(r.Context(), value); err != nil {
-			return s.phase5ErrorEnvelope(err)
+		value, readiness, approvalErr := s.phase5Repository.CreateEnforceApprovalIfReady(r.Context(), platformdb.EnforceApprovalCommand{
+			ID:                     id,
+			ExpectedReleaseID:      request.ClassifierReleaseID,
+			PolicyOverride:         valueForApproval,
+			RequestedPolicyDigest:  request.PolicyDigest,
+			RequestedProfileDigest: request.ProfileDigest,
+			ApprovedAt:             s.now(),
+			ApprovedBy:             principal.AdminID,
+			Reason:                 request.Reason,
+			CreatedAt:              s.now(),
+		})
+		if approvalErr != nil {
+			if errors.Is(approvalErr, platformdb.ErrEnforceNotReady) {
+				return http.StatusUnprocessableEntity, apiEnvelope{Error: &apiError{Code: "enforce_not_ready", Message: "Enforce readiness gates have not passed"}, Data: readiness}
+			}
+			if errors.Is(approvalErr, platformdb.ErrEnforceReadinessUnavailable) {
+				return http.StatusServiceUnavailable, apiEnvelope{Error: &apiError{Code: "enforce_readiness_unavailable", Message: "Enforce readiness is unavailable"}}
+			}
+			return s.phase5ErrorEnvelope(approvalErr)
 		}
-		value, _ = s.phase5Repository.ValidEnforceApproval(r.Context(), releaseID, policyDigest, profileDigest, s.now())
-		s.appendAIAudit(r.Context(), r, "enforce.approve", "enforce_approval", id, "success", map[string]any{"classifier_release_id": releaseID, "policy_digest": policyDigest, "profile_digest": profileDigest})
+		s.appendAIAudit(r.Context(), r, "enforce.approve", "enforce_approval", id, "success", map[string]any{"classifier_release_id": value.ClassifierReleaseID, "policy_digest": value.PolicyDigest, "profile_digest": value.ProfileDigest})
 		return http.StatusCreated, apiEnvelope{Data: value}
 	})
 }
@@ -686,6 +641,8 @@ func (s *Server) phase5Error(err error) (int, string, string) {
 		return http.StatusConflict, "replay_expired", "replay snapshot has expired"
 	case errors.Is(err, platformdb.ErrApprovalInvalid), errors.Is(err, platformdb.ErrApprovalNotFound), errors.Is(err, platformdb.ErrEnforceNotReady):
 		return http.StatusUnprocessableEntity, "enforce_not_ready", "Enforce approval is not valid"
+	case errors.Is(err, platformdb.ErrEnforceReadinessUnavailable):
+		return http.StatusServiceUnavailable, "enforce_readiness_unavailable", "Enforce readiness is unavailable"
 	case errors.Is(err, platformdb.ErrDeliveryNotFound), errors.Is(err, platformdb.ErrRouteDecisionNotFound), errors.Is(err, platformdb.ErrFeedbackNotFound), errors.Is(err, platformdb.ErrReplayNotFound):
 		return http.StatusNotFound, "not_found", "Phase 5 resource not found"
 	case errors.Is(err, idempotency.ErrConflict):

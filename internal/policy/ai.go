@@ -13,7 +13,10 @@ import (
 // resolved default (Shadow).
 const ModeInherit Mode = "inherit"
 
-var ErrEnforceNotAvailable = errors.New("policy: enforce is not available in phase 4")
+var (
+	ErrEnforceNotAvailable     = errors.New("policy: enforce is not available in phase 4")
+	ErrInvalidEnforceThreshold = errors.New("policy: enforce threshold is outside the safe range")
+)
 
 var knownCategories = map[domain.Category]struct{}{
 	domain.CategoryAnnouncement: {}, domain.CategoryUpdate: {}, domain.CategoryMaintenance: {},

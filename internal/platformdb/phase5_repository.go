@@ -16,21 +16,23 @@ import (
 	"time"
 
 	"github.com/Oumainory/DDBOT-AI/internal/domain"
+	"github.com/Oumainory/DDBOT-AI/internal/policy"
 )
 
 var (
-	ErrRouteDecisionNotFound   = errors.New("platformdb: route decision not found")
-	ErrDeliveryNotFound        = errors.New("platformdb: delivery not found")
-	ErrReplayNotFound          = errors.New("platformdb: replay snapshot not found")
-	ErrFeedbackNotFound        = errors.New("platformdb: feedback not found")
-	ErrApprovalNotFound        = errors.New("platformdb: enforce approval not found")
-	ErrApprovalInvalid         = errors.New("platformdb: enforce approval invalid")
-	ErrEnforceNotReady         = errors.New("platformdb: enforce not ready")
-	ErrReplayExpired           = errors.New("platformdb: replay snapshot expired")
-	ErrDeliveryRetryNotAllowed = errors.New("platformdb: delivery retry not allowed")
-	ErrPhase5Unavailable       = errors.New("platformdb: phase5 unavailable")
-	ErrDeliveryTransition      = errors.New("platformdb: invalid delivery transition")
-	ErrEmergencyDisabled       = errors.New("platformdb: enforce emergency disabled")
+	ErrRouteDecisionNotFound       = errors.New("platformdb: route decision not found")
+	ErrDeliveryNotFound            = errors.New("platformdb: delivery not found")
+	ErrReplayNotFound              = errors.New("platformdb: replay snapshot not found")
+	ErrFeedbackNotFound            = errors.New("platformdb: feedback not found")
+	ErrApprovalNotFound            = errors.New("platformdb: enforce approval not found")
+	ErrApprovalInvalid             = errors.New("platformdb: enforce approval invalid")
+	ErrEnforceNotReady             = errors.New("platformdb: enforce not ready")
+	ErrEnforceReadinessUnavailable = errors.New("platformdb: enforce readiness unavailable")
+	ErrReplayExpired               = errors.New("platformdb: replay snapshot expired")
+	ErrDeliveryRetryNotAllowed     = errors.New("platformdb: delivery retry not allowed")
+	ErrPhase5Unavailable           = errors.New("platformdb: phase5 unavailable")
+	ErrDeliveryTransition          = errors.New("platformdb: invalid delivery transition")
+	ErrEmergencyDisabled           = errors.New("platformdb: enforce emergency disabled")
 )
 
 const (
@@ -122,6 +124,22 @@ type EnforceApprovalRecord struct {
 	RevokedAt             *time.Time      `json:"revoked_at,omitempty"`
 	Reason                string          `json:"reason,omitempty"`
 	CreatedAt             time.Time       `json:"created_at"`
+}
+
+// EnforceApprovalCommand is the complete input to the authoritative approval
+// boundary.  Request-supplied readiness evidence is deliberately absent: the
+// repository computes and persists its own canonical snapshot while holding
+// the same SQLite transaction used for the approval insert.
+type EnforceApprovalCommand struct {
+	ID                     string
+	ExpectedReleaseID      string
+	PolicyOverride         AIPolicyOverrideRecord
+	RequestedPolicyDigest  string
+	RequestedProfileDigest string
+	ApprovedBy             string
+	Reason                 string
+	ApprovedAt             time.Time
+	CreatedAt              time.Time
 }
 
 type MediaCacheEntryRecord struct {
@@ -988,6 +1006,128 @@ func (r *Phase5Repository) FeedbackMetrics(ctx context.Context) (knownImportantF
 	return
 }
 
+// loadEnforceProfileTx reads the profile used by an approval while the
+// approval transaction is already open.  A profile mutation therefore either
+// commits before this command and is observed here, or commits after it and
+// revokes the newly-created approval in its own serialized write transaction.
+func loadEnforceProfileTx(ctx context.Context, tx *sql.Tx, id string) (policy.Profile, error) {
+	if strings.TrimSpace(id) == "" {
+		return policy.OfficialGameProfile(), nil
+	}
+	var value policy.Profile
+	var categories, tags, safety string
+	var builtin, created, updated int64
+	err := tx.QueryRowContext(phase5Context(ctx), `SELECT id,name,description,default_action,category_actions_json,tag_actions_json,safety_json,builtin,created_at,updated_at FROM ai_profiles WHERE id=?`, strings.TrimSpace(id)).Scan(&value.ID, &value.Name, &value.Description, &value.DefaultAction, &categories, &tags, &safety, &builtin, &created, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return policy.Profile{}, ErrAIProfileNotFound
+	}
+	if err != nil {
+		return policy.Profile{}, err
+	}
+	if err := json.Unmarshal([]byte(categories), &value.CategoryActions); err != nil {
+		return policy.Profile{}, err
+	}
+	if err := json.Unmarshal([]byte(tags), &value.TagActions); err != nil {
+		return policy.Profile{}, err
+	}
+	if err := json.Unmarshal([]byte(safety), &value.Safety); err != nil {
+		return policy.Profile{}, err
+	}
+	value.Builtin = builtin != 0
+	return value, nil
+}
+
+// CreateEnforceApprovalIfReady is the authoritative Enforce approval command.
+// Readiness, emergency state, profile semantics, digest validation, approval
+// revocation and insertion all share one SQLite transaction.  No caller can
+// supply a stale readiness JSON snapshot or split the readiness/insert window.
+func (r *Phase5Repository) CreateEnforceApprovalIfReady(ctx context.Context, command EnforceApprovalCommand) (EnforceApprovalRecord, EnforceReadiness, error) {
+	if err := r.require(); err != nil {
+		return EnforceApprovalRecord{}, EnforceReadiness{}, err
+	}
+	if strings.TrimSpace(command.ID) == "" || strings.TrimSpace(command.ApprovedBy) == "" {
+		return EnforceApprovalRecord{}, EnforceReadiness{}, ErrApprovalInvalid
+	}
+	ctx = phase5Context(ctx)
+	tx, err := r.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return EnforceApprovalRecord{}, EnforceReadiness{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	ai := NewAIRepository(r.store)
+	readiness, err := ai.enforceReadinessQuery(ctx, tx)
+	if err != nil {
+		return EnforceApprovalRecord{}, EnforceReadiness{}, fmt.Errorf("%w: %v", ErrEnforceReadinessUnavailable, err)
+	}
+	if !readiness.Ready || strings.TrimSpace(readiness.CurrentReleaseID) == "" {
+		return EnforceApprovalRecord{}, readiness, ErrEnforceNotReady
+	}
+	if expected := strings.TrimSpace(command.ExpectedReleaseID); expected != "" && expected != readiness.CurrentReleaseID {
+		return EnforceApprovalRecord{}, readiness, ErrApprovalInvalid
+	}
+	var emergency string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT value FROM release_metadata WHERE key='enforce_emergency_disabled'),'false')`).Scan(&emergency); err != nil {
+		return EnforceApprovalRecord{}, readiness, err
+	}
+	if strings.EqualFold(strings.TrimSpace(emergency), "true") {
+		return EnforceApprovalRecord{}, readiness, ErrEmergencyDisabled
+	}
+
+	profile, err := loadEnforceProfileTx(ctx, tx, command.PolicyOverride.ProfileID)
+	if err != nil {
+		return EnforceApprovalRecord{}, readiness, err
+	}
+	effective, resolvedProfile, err := policy.ResolveEnforcePolicy(profile, command.PolicyOverride.Threshold, command.PolicyOverride.DefaultAction, command.PolicyOverride.CategoryActions, command.PolicyOverride.TagActions)
+	if err != nil {
+		return EnforceApprovalRecord{}, readiness, err
+	}
+	policyDigest := policy.Digest(effective)
+	profileDigest := policy.ProfileDigest(resolvedProfile)
+	if requested := strings.TrimSpace(command.RequestedPolicyDigest); requested != "" && requested != policyDigest {
+		return EnforceApprovalRecord{}, readiness, ErrApprovalInvalid
+	}
+	if requested := strings.TrimSpace(command.RequestedProfileDigest); requested != "" && requested != profileDigest {
+		return EnforceApprovalRecord{}, readiness, ErrApprovalInvalid
+	}
+	evidence, err := json.Marshal(readiness)
+	if err != nil || !json.Valid(evidence) {
+		return EnforceApprovalRecord{}, readiness, ErrApprovalInvalid
+	}
+	approvedAt := phase5Time(command.ApprovedAt)
+	createdAt := phase5Time(command.CreatedAt)
+	value := EnforceApprovalRecord{
+		ID:                    command.ID,
+		ClassifierReleaseID:   readiness.CurrentReleaseID,
+		PolicyDigest:          policyDigest,
+		ProfileDigest:         profileDigest,
+		ReadinessEvidenceJSON: evidence,
+		ApprovedAt:            approvedAt,
+		ApprovedBy:            command.ApprovedBy,
+		Reason:                command.Reason,
+		CreatedAt:             createdAt,
+	}
+	if err := revokeEnforceApprovalsTx(ctx, tx, approvedAt, "approval_replaced"); err != nil {
+		return EnforceApprovalRecord{}, readiness, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO enforce_approvals (id,classifier_release_id,policy_digest,profile_digest,readiness_evidence_json,approved_at,approved_by,reason,created_at) VALUES (?,?,?,?,?,?,?,?,?)`, value.ID, value.ClassifierReleaseID, value.PolicyDigest, value.ProfileDigest, string(value.ReadinessEvidenceJSON), value.ApprovedAt.Unix(), value.ApprovedBy, value.Reason, value.CreatedAt.Unix()); err != nil {
+		return EnforceApprovalRecord{}, readiness, err
+	}
+	if err := tx.Commit(); err != nil {
+		return EnforceApprovalRecord{}, readiness, err
+	}
+	committed = true
+	return value, readiness, nil
+}
+
+// SaveEnforceApproval is a low-level persistence helper retained for durable
+// fixtures and migration-era callers. Production approval activation must use
+// CreateEnforceApprovalIfReady, which owns the readiness/insert transaction.
 func (r *Phase5Repository) SaveEnforceApproval(ctx context.Context, value EnforceApprovalRecord) error {
 	if err := r.require(); err != nil {
 		return err
