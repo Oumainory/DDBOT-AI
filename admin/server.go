@@ -1,10 +1,12 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -237,6 +239,7 @@ type Server struct {
 	observationRecorder *observation.Recorder
 	restoreObservation  func()
 	legacySubscriptions *subscription.Service
+	legacyIdempotency   idempotency.Store
 }
 
 // PlatformConfig controls the opt-in Phase 1 platform foundation mounted next to
@@ -327,6 +330,7 @@ func start(online *atomic.Bool, alive *atomic.Bool, platform *PlatformConfig) (*
 		s.observationRecorder = platformHTTP.observationRecorder
 		s.restoreObservation = platformHTTP.restoreObservation
 		s.legacySubscriptions = platformHTTP.legacySubscriptions
+		s.legacyIdempotency = platformHTTP.idempotency
 		mux.Handle("/api/v2/", platformHTTP.handler)
 		mux.Handle("/healthz", platformHTTP.probe.Healthz())
 		mux.Handle("/readyz", platformHTTP.probe.Readyz())
@@ -401,6 +405,7 @@ type platformHTTP struct {
 	restoreObservation  func()
 	domainRepository    *platformdb.DomainRepository
 	legacySubscriptions *subscription.Service
+	idempotency         idempotency.Store
 }
 
 func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP, *platformdb.Store, error) {
@@ -841,6 +846,7 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 		restoreObservation:  restoreObservation,
 		domainRepository:    domainRepository,
 		legacySubscriptions: legacySubscriptions,
+		idempotency:         durableIdempotency,
 	}, store, nil
 }
 
@@ -935,7 +941,7 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 		// 添加 CORS 头
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
@@ -990,6 +996,123 @@ func (s *Server) handleSubsSummary(w http.ResponseWriter, _ *http.Request) {
 
 // 订阅管理 API 处理函数
 
+const (
+	legacyIdempotencyPrincipal = "legacy-admin"
+	maxLegacyJSONBodyBytes     = int64(1 << 20)
+)
+
+// readLegacyJSONBody enforces the same hard request-body boundary as the
+// domain API before decoding or claiming an idempotency key.  In particular,
+// chunked requests and a valid JSON value followed by a large whitespace tail
+// cannot bypass the limit.
+func readLegacyJSONBody(r *http.Request) ([]byte, error) {
+	if r == nil || r.Body == nil {
+		return nil, errors.New("invalid request body")
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxLegacyJSONBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || int64(len(body)) > maxLegacyJSONBodyBytes {
+		return nil, errors.New("invalid request body")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("invalid request body")
+		}
+		return nil, err
+	}
+	return trimmed, nil
+}
+
+func decodeLegacyJSON(body []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	return decoder.Decode(target)
+}
+
+func legacyJSON(value any) []byte {
+	body, err := json.Marshal(value)
+	if err != nil {
+		return []byte(`{"error":"internal_error"}` + "\n")
+	}
+	return append(body, '\n')
+}
+
+func writeLegacyResponse(w http.ResponseWriter, status int, body []byte) {
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	}
+	if status != http.StatusOK {
+		w.WriteHeader(status)
+	}
+	_, _ = w.Write(body)
+}
+
+// executeLegacyCommand is the durable command boundary for the historical
+// subscription endpoints.  The side effect callback is invoked only after a
+// SQLite-backed claim; a replay after process restart therefore returns the
+// original response without executing Subscribe/Unsubscribe a second time.
+func (s *Server) executeLegacyCommand(w http.ResponseWriter, r *http.Request, command string, body []byte, execute func() (int, []byte)) {
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if key == "" {
+		writeLegacyResponse(w, http.StatusBadRequest, legacyJSON(map[string]string{"error": "idempotency_required"}))
+		return
+	}
+	fingerprint, err := idempotency.NewFingerprint(r.Method, r.URL.RequestURI(), body)
+	if err != nil {
+		writeLegacyResponse(w, http.StatusBadRequest, legacyJSON(map[string]string{"error": "invalid_argument"}))
+		return
+	}
+	if s == nil || s.legacyIdempotency == nil {
+		writeLegacyResponse(w, http.StatusServiceUnavailable, legacyJSON(map[string]string{"error": "idempotency_unavailable"}))
+		return
+	}
+	now := time.Now().UTC()
+	record, outcome, err := s.legacyIdempotency.BeginCommand(legacyIdempotencyPrincipal, key, command, fingerprint, now)
+	if err != nil {
+		switch {
+		case errors.Is(err, idempotency.ErrConflict):
+			writeLegacyResponse(w, http.StatusConflict, legacyJSON(map[string]string{"error": "idempotency_conflict"}))
+		case errors.Is(err, idempotency.ErrInProgress):
+			writeLegacyResponse(w, http.StatusConflict, legacyJSON(map[string]string{"error": "idempotency_in_progress"}))
+		case errors.Is(err, idempotency.ErrInvalidKey):
+			writeLegacyResponse(w, http.StatusBadRequest, legacyJSON(map[string]string{"error": "invalid_argument"}))
+		default:
+			writeLegacyResponse(w, http.StatusServiceUnavailable, legacyJSON(map[string]string{"error": "idempotency_unavailable"}))
+		}
+		return
+	}
+	if outcome == idempotency.OutcomeReplay {
+		for name, value := range record.Headers {
+			w.Header().Set(name, value)
+		}
+		writeLegacyResponse(w, record.StatusCode, record.Body)
+		return
+	}
+	status, response := execute()
+	if status < 100 || status > 599 || len(response) == 0 {
+		status = http.StatusInternalServerError
+		response = legacyJSON(map[string]string{"error": "internal_error"})
+	}
+	if _, err := s.legacyIdempotency.CompleteCommand(legacyIdempotencyPrincipal, key, command, fingerprint, status, map[string]string{"Content-Type": "application/json; charset=utf-8"}, response, time.Now().UTC()); err != nil {
+		// A side effect may already have happened. Do not retry it when the
+		// durable completion cannot be recorded; surface a stable availability
+		// error and leave the in-progress record for operator recovery.
+		writeLegacyResponse(w, http.StatusServiceUnavailable, legacyJSON(map[string]string{"error": "idempotency_unavailable"}))
+		return
+	}
+	writeLegacyResponse(w, status, response)
+}
+
 func (s *Server) handleSubsList(w http.ResponseWriter, r *http.Request) {
 	var subs []SubInfo
 	for _, c := range concern.ListConcern() {
@@ -1018,67 +1141,63 @@ func (s *Server) handleSubsList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAddSub(w http.ResponseWriter, r *http.Request) {
-	var req AddSubRequest
-	decoder := json.NewDecoder(r.Body)
-	decoder.UseNumber()
-	if err := decoder.Decode(&req); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
-		return
-	}
-
-	ctx := &mockMsgCtx{groupCode: req.GroupCode}
-	service := s.legacySubscriptions
-	if service == nil {
-		service = subscription.NewService()
-	}
-	_, err := service.SubscribeWithContext(r.Context(), ctx, subscription.Request{
-		Site: req.Site, ID: parseIdToString(req.ID), Type: req.Type, GroupCode: req.GroupCode,
-	})
+	body, err := readLegacyJSONBody(r)
 	if err != nil {
-		if subscription.IsMigrationInProgress(err) {
-			w.WriteHeader(http.StatusConflict)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "migration_in_progress"})
-			return
-		}
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		writeLegacyResponse(w, http.StatusBadRequest, legacyJSON(map[string]string{"error": "Invalid request"}))
 		return
 	}
-
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+	var req AddSubRequest
+	if err := decodeLegacyJSON(body, &req); err != nil {
+		writeLegacyResponse(w, http.StatusBadRequest, legacyJSON(map[string]string{"error": "Invalid request"}))
+		return
+	}
+	s.executeLegacyCommand(w, r, "create_subscription", body, func() (int, []byte) {
+		ctx := &mockMsgCtx{groupCode: req.GroupCode}
+		service := s.legacySubscriptions
+		if service == nil {
+			service = subscription.NewService()
+		}
+		_, err := service.SubscribeWithContext(r.Context(), ctx, subscription.Request{
+			Site: req.Site, ID: parseIdToString(req.ID), Type: req.Type, GroupCode: req.GroupCode,
+		})
+		if err != nil {
+			if subscription.IsMigrationInProgress(err) {
+				return http.StatusConflict, legacyJSON(map[string]string{"error": "migration_in_progress"})
+			}
+			return http.StatusInternalServerError, legacyJSON(map[string]string{"error": err.Error()})
+		}
+		return http.StatusOK, legacyJSON(map[string]string{"status": "success"})
+	})
 }
 
 func (s *Server) handleRemoveSub(w http.ResponseWriter, r *http.Request) {
-	var req RemoveSubRequest
-	decoder := json.NewDecoder(r.Body)
-	decoder.UseNumber()
-	if err := decoder.Decode(&req); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request"})
-		return
-	}
-
-	ctx := &mockMsgCtx{groupCode: req.GroupCode}
-	service := s.legacySubscriptions
-	if service == nil {
-		service = subscription.NewService()
-	}
-	_, err := service.UnsubscribeWithContext(r.Context(), ctx, subscription.Request{
-		Site: req.Site, ID: parseIdToString(req.ID), Type: req.Type, GroupCode: req.GroupCode,
-	})
+	body, err := readLegacyJSONBody(r)
 	if err != nil {
-		if subscription.IsMigrationInProgress(err) {
-			w.WriteHeader(http.StatusConflict)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "migration_in_progress"})
-			return
-		}
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		writeLegacyResponse(w, http.StatusBadRequest, legacyJSON(map[string]string{"error": "Invalid request"}))
 		return
 	}
-
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+	var req RemoveSubRequest
+	if err := decodeLegacyJSON(body, &req); err != nil {
+		writeLegacyResponse(w, http.StatusBadRequest, legacyJSON(map[string]string{"error": "Invalid request"}))
+		return
+	}
+	s.executeLegacyCommand(w, r, "delete_subscription", body, func() (int, []byte) {
+		ctx := &mockMsgCtx{groupCode: req.GroupCode}
+		service := s.legacySubscriptions
+		if service == nil {
+			service = subscription.NewService()
+		}
+		_, err := service.UnsubscribeWithContext(r.Context(), ctx, subscription.Request{
+			Site: req.Site, ID: parseIdToString(req.ID), Type: req.Type, GroupCode: req.GroupCode,
+		})
+		if err != nil {
+			if subscription.IsMigrationInProgress(err) {
+				return http.StatusConflict, legacyJSON(map[string]string{"error": "migration_in_progress"})
+			}
+			return http.StatusInternalServerError, legacyJSON(map[string]string{"error": err.Error()})
+		}
+		return http.StatusOK, legacyJSON(map[string]string{"status": "success"})
+	})
 }
 
 func (s *Server) handleSubDetail(w http.ResponseWriter, r *http.Request) {

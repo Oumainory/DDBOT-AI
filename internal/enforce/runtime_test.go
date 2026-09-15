@@ -362,3 +362,71 @@ func TestEnforceApprovalRevokeDuringProviderFailsOpen(t *testing.T) {
 		t.Fatal("runtime did not finish after approval revoke")
 	}
 }
+
+func TestEnforceFinalDropGateSurvivesConcurrentOperatorWrites(t *testing.T) {
+	ctx := context.Background()
+	at := time.Unix(1700000000, 0).UTC()
+	store, err := platformdb.Open(ctx, platformdb.Config{Path: filepath.Join(t.TempDir(), "enforce-concurrent-operators.sqlite"), Now: func() time.Time { return at }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ai := platformdb.NewAIRepository(store)
+	repo := platformdb.NewPhase5Repository(store)
+	release := enforceRelease()
+	release.ID, release.Fingerprint = "release-concurrent-operators", "fingerprint-concurrent-operators"
+	if err := ai.SaveRelease(ctx, release); err != nil {
+		t.Fatal(err)
+	}
+	profile := policy.OfficialGameProfile()
+	effective := policy.EffectivePolicy{Mode: policy.ModeEnforce, Threshold: .90, CategoryActions: profile.CategoryActions, TagActions: profile.TagActions}
+	approval := platformdb.EnforceApprovalRecord{ID: "approval-concurrent-operators", ClassifierReleaseID: release.ID, PolicyDigest: policy.Digest(effective), ProfileDigest: policy.ProfileDigest(profile), ReadinessEvidenceJSON: json.RawMessage(`{"ready":true}`), ApprovedAt: at, ApprovedBy: "admin", CreatedAt: at}
+	if err := repo.SaveEnforceApproval(ctx, approval); err != nil {
+		t.Fatal(err)
+	}
+	providerStarted := make(chan struct{})
+	providerRelease := make(chan struct{})
+	fake := &provider.FakeProvider{ClassifyFunc: func(context.Context, domain.NormalizedEvent) (classifier.Classification, classifier.Usage, error) {
+		close(providerStarted)
+		<-providerRelease
+		return classifier.Classification{SchemaVersion: 1, Category: domain.CategoryPromotion, Importance: domain.ImportanceLow, Confidence: .99}, classifier.Usage{}, nil
+	}}
+	runtime := New(Config{AIRepository: ai, Repository: repo, Provider: fake, Readiness: func(context.Context, classifier.Release) (bool, error) { return true, nil }, Now: func() time.Time { return at.Add(time.Second) }})
+	defer runtime.Close()
+	resultCh := make(chan []Decision, 1)
+	go func() {
+		decisions, _ := runtime.Evaluate(ctx, enforceEvent(), []Route{{Mode: policy.ModeEnforce, Policy: policy.PolicyContext{Profile: profile, Threshold: .90}, Release: release, SourceID: "source-1", SubscriptionID: "subscription-1", Target: Target{ID: "target-1", Type: "group", ExternalID: "123", ConnectorID: "connector-1"}}})
+		resultCh <- decisions
+	}()
+	select {
+	case <-providerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("provider did not enter the in-flight boundary")
+	}
+	operatorErrors := make(chan error, 2)
+	var operators sync.WaitGroup
+	operators.Add(2)
+	go func() {
+		defer operators.Done()
+		operatorErrors <- repo.SetEnforceEmergencyDisabled(ctx, true, at.Add(2*time.Second))
+	}()
+	go func() {
+		defer operators.Done()
+		operatorErrors <- repo.RevokeEnforceApprovals(ctx, "concurrent operator review", at.Add(2*time.Second))
+	}()
+	operators.Wait()
+	close(providerRelease)
+	for i := 0; i < 2; i++ {
+		if err := <-operatorErrors; err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case decisions := <-resultCh:
+		if len(decisions) != 1 || decisions[0].Action != policy.RoutePass || decisions[0].SuppressSend {
+			t.Fatalf("concurrent operator race result = %#v", decisions)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not finish after concurrent operator writes")
+	}
+}

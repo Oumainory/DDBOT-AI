@@ -1013,6 +1013,17 @@ func (r *Phase5Repository) SaveEnforceApproval(ctx context.Context, value Enforc
 			_ = tx.Rollback()
 		}
 	}()
+	// Read the active release inside the same write transaction that revokes
+	// stale approvals and inserts this one.  Readiness is deliberately a
+	// separate evidence snapshot; this check is the final release
+	// linearization point and rejects an activation that happened in between.
+	var activeReleaseID string
+	if err = tx.QueryRowContext(phase5Context(ctx), `SELECT COALESCE((SELECT id FROM classifier_releases WHERE active=1 LIMIT 1),'')`).Scan(&activeReleaseID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(activeReleaseID) == "" || activeReleaseID != strings.TrimSpace(value.ClassifierReleaseID) {
+		return ErrApprovalInvalid
+	}
 	if _, err = tx.ExecContext(phase5Context(ctx), `UPDATE enforce_approvals SET revoked_at=COALESCE(revoked_at,?) WHERE revoked_at IS NULL AND (classifier_release_id<>? OR policy_digest<>? OR profile_digest<>?)`, value.ApprovedAt.Unix(), value.ClassifierReleaseID, value.PolicyDigest, value.ProfileDigest); err != nil {
 		return err
 	}

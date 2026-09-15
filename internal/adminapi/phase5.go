@@ -532,6 +532,9 @@ func (s *Server) validateEnforcePolicy(ctx context.Context, value platformdb.AIP
 	if err != nil {
 		return err
 	}
+	if strings.TrimSpace(readiness.CurrentReleaseID) == "" || readiness.CurrentReleaseID != release.ID {
+		return platformdb.ErrEnforceNotReady
+	}
 	effective, profile, err := s.enforcePolicyFromOverride(ctx, value)
 	if err != nil {
 		return err
@@ -559,11 +562,15 @@ func (s *Server) handleEnforceApprove(w http.ResponseWriter, r *http.Request) {
 		if !readiness.Ready {
 			return http.StatusUnprocessableEntity, apiEnvelope{Error: &apiError{Code: "enforce_not_ready", Message: "Enforce readiness gates have not passed"}, Data: readiness}
 		}
-		release, releaseErr := s.aiRepository.ActiveRelease(r.Context())
-		if releaseErr != nil {
+		// EnforceReadiness returns the release that all metrics were measured
+		// against. Use that identity directly; a second lookup is only a
+		// presentation/validation step and must never silently pair a newer
+		// release with older readiness evidence.
+		if strings.TrimSpace(readiness.CurrentReleaseID) == "" {
 			return http.StatusUnprocessableEntity, apiEnvelope{Error: &apiError{Code: "enforce_not_ready", Message: "an active classifier release is required"}}
 		}
-		if request.ClassifierReleaseID != "" && request.ClassifierReleaseID != release.ID {
+		releaseID := readiness.CurrentReleaseID
+		if request.ClassifierReleaseID != "" && request.ClassifierReleaseID != releaseID {
 			return http.StatusConflict, apiEnvelope{Error: &apiError{Code: "enforce_not_ready", Message: "classifier release is not current"}}
 		}
 		valueForApproval := platformdb.AIPolicyOverrideRecord{ProfileID: request.ProfileID, Threshold: request.Threshold, DefaultAction: request.DefaultAction, CategoryActions: make(map[domain.Category]policy.Action), TagActions: request.TagActions}
@@ -578,17 +585,17 @@ func (s *Server) handleEnforceApprove(w http.ResponseWriter, r *http.Request) {
 		if request.PolicyDigest != "" && request.PolicyDigest != policyDigest || request.ProfileDigest != "" && request.ProfileDigest != profileDigest {
 			return http.StatusConflict, apiEnvelope{Error: &apiError{Code: "enforce_not_ready", Message: "policy or profile digest is stale"}}
 		}
-		evidence := request.ReadinessEvidence
-		if len(evidence) == 0 {
-			evidence, _ = json.Marshal(readiness)
-		}
+		// Never persist caller-supplied readiness evidence: it can be stale or
+		// describe a different release. The approval records the canonical
+		// server-side snapshot that just passed the current-release gate.
+		evidence, _ := json.Marshal(readiness)
 		id := "approval_" + strconv.FormatInt(s.now().UTC().UnixNano(), 10)
-		value := platformdb.EnforceApprovalRecord{ID: id, ClassifierReleaseID: release.ID, PolicyDigest: policyDigest, ProfileDigest: profileDigest, ReadinessEvidenceJSON: evidence, ApprovedAt: s.now(), ApprovedBy: principal.AdminID, Reason: request.Reason, CreatedAt: s.now()}
+		value := platformdb.EnforceApprovalRecord{ID: id, ClassifierReleaseID: releaseID, PolicyDigest: policyDigest, ProfileDigest: profileDigest, ReadinessEvidenceJSON: evidence, ApprovedAt: s.now(), ApprovedBy: principal.AdminID, Reason: request.Reason, CreatedAt: s.now()}
 		if err := s.phase5Repository.SaveEnforceApproval(r.Context(), value); err != nil {
 			return s.phase5ErrorEnvelope(err)
 		}
-		value, _ = s.phase5Repository.ValidEnforceApproval(r.Context(), release.ID, policyDigest, profileDigest, s.now())
-		s.appendAIAudit(r.Context(), r, "enforce.approve", "enforce_approval", id, "success", map[string]any{"classifier_release_id": release.ID, "policy_digest": policyDigest, "profile_digest": profileDigest})
+		value, _ = s.phase5Repository.ValidEnforceApproval(r.Context(), releaseID, policyDigest, profileDigest, s.now())
+		s.appendAIAudit(r.Context(), r, "enforce.approve", "enforce_approval", id, "success", map[string]any{"classifier_release_id": releaseID, "policy_digest": policyDigest, "profile_digest": profileDigest})
 		return http.StatusCreated, apiEnvelope{Data: value}
 	})
 }

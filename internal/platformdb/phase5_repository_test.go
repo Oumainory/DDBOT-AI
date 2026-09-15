@@ -158,6 +158,37 @@ func TestPhase5PersistDropRejectsReleaseActivationRace(t *testing.T) {
 	}
 }
 
+func TestPhase5ApprovalRejectsReleaseChangedAfterReadiness(t *testing.T) {
+	store, repo := phase5Store(t)
+	ctx := context.Background()
+	at := time.Unix(1700000000, 0).UTC()
+	oldRelease := aiTestRelease()
+	oldRelease.ID = "release-approval-old"
+	oldRelease.Fingerprint = "fingerprint-approval-old"
+	oldRelease.Active = true
+	if err := NewAIRepository(store).SaveRelease(ctx, oldRelease); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate readiness having been computed for the old release. The active
+	// release changes before approval persistence; the repository transaction
+	// must reject the stale evidence rather than creating an approval for a
+	// release that is no longer active.
+	newRelease := aiTestRelease()
+	newRelease.ID = "release-approval-new"
+	newRelease.Fingerprint = "fingerprint-approval-new"
+	newRelease.Active = true
+	if err := NewAIRepository(store).SaveRelease(ctx, newRelease); err != nil {
+		t.Fatal(err)
+	}
+	err := repo.SaveEnforceApproval(ctx, EnforceApprovalRecord{ID: "approval-stale-release", ClassifierReleaseID: oldRelease.ID, PolicyDigest: "policy", ProfileDigest: "profile", ReadinessEvidenceJSON: json.RawMessage(`{"ready":true}`), ApprovedAt: at, ApprovedBy: "admin", CreatedAt: at})
+	if !errors.Is(err, ErrApprovalInvalid) {
+		t.Fatalf("stale release approval error = %v, want %v", err, ErrApprovalInvalid)
+	}
+	if _, err := repo.ValidEnforceApproval(ctx, oldRelease.ID, "policy", "profile", at.Add(time.Second)); !errors.Is(err, ErrApprovalNotFound) {
+		t.Fatalf("stale approval lookup = %v, want %v", err, ErrApprovalNotFound)
+	}
+}
+
 func TestPhase5PolicyMutationRevokesInFlightApproval(t *testing.T) {
 	store, repo := phase5Store(t)
 	ctx := context.Background()

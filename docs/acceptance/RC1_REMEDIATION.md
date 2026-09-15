@@ -40,3 +40,23 @@ checkptr instrumentation before tests execute. The root `admin` package still
 runs in the full non-race and locked-baseline gates; the targeted race job
 covers the independently runnable Phase 5 packages and does not weaken the
 product runtime or compatibility checks.
+
+## Independent re-audit follow-up
+
+The first RC2 candidate was rejected by an independent read-only audit. The
+follow-up fixes below are intentionally limited to the three confirmed
+blockers and the two verification conditions; they do not move `main`, alter
+RC1, or introduce a new migration.
+
+| Finding | Disposition | Evidence in this candidate |
+| --- | --- | --- |
+| F-002 legacy subscription commands | Fixed | `/api/v1/subs/add` and `/api/v1/subs/remove` now require a durable SQLite `Idempotency-Key` claim before invoking the Legacy subscription service. The claim uses the canonical method/path/query/body fingerprint and `create_subscription`/`delete_subscription` command type. Completion stores only the allowlisted JSON content type and response body. `admin/legacy_idempotency_test.go` closes and reopens the database, proving a replay after restart does not invoke the side effect twice and that a conflicting body returns 409. |
+| F-003 mixed-release approval | Fixed | Readiness metrics are evaluated from one SQLite transaction and propagate every evaluation/feedback query error. The approval handler uses the `CurrentReleaseID` returned with the evidence; `SaveEnforceApproval` rechecks the active release inside its write transaction before inserting the approval. `internal/platformdb/ai_repository_test.go` and `phase5_repository_test.go` cover storage-error propagation and stale-release rejection. |
+| N-001 policy mutation race | Fixed | `SaveProfile` and `SavePolicy` read the existing semantic row only after beginning their write transaction, then revoke approvals in that same transaction as the mutation. A stale pre-transaction read can no longer leave an approval valid across a policy/profile change. |
+| F-010 durable identity integration | Fixed and proven | `admin/phase5_integration_test.go` drives the production `evaluateEnforceRoute` pre-send bridge with a durable Source UUID different from its upstream ID, a durable Target UUID different from the group number, and a durable Subscription projection ID different from the Legacy key. It populates System → Global → Source → Target → Subscription overlays, executes an approved DROP, and asserts the persisted RouteDecision contains all three durable IDs. The replay snapshot now carries the resolved durable Source ID so the final atomic DROP identity check cannot fail-open a valid route. Missing/ambiguous identity remains PASS. |
+| N-002 race coverage | Fixed | The targeted Linux race gate continues to run the safe production boundaries (`internal/enforce`, `internal/platformdb`, `internal/migration`, media cache, replay, idempotency and API packages). `internal/enforce/runtime_test.go` now includes a deterministic concurrent emergency-disable plus approval-revoke test while a provider call is in flight; the final durable gate must return PASS. The root `admin` race exclusion remains the documented Go 1.26.2 `modern-go/gls` checkptr baseline exception, not a relaxed product gate. |
+| F-011 third-party inventory | Deferred minor | No large dependency-management system was introduced. Existing release notices and pinned FFmpeg provenance remain authoritative. |
+
+F-008 remains intentionally conservative: resolving an operator feedback item
+does not erase a known important false-drop from the quality evidence for that
+classifier release; a new release starts its own evidence set.

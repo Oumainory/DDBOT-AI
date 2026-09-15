@@ -232,6 +232,21 @@ func TestAIRepositoryReadinessIsolatedToActiveReleaseAndLatestCaseResult(t *test
 	}
 }
 
+func TestAIRepositoryReadinessReturnsFeedbackStorageError(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, Config{Path: "file::memory:?cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.db.ExecContext(ctx, "DROP TABLE feedback"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewAIRepository(store).EnforceReadiness(ctx); err == nil {
+		t.Fatal("readiness unexpectedly succeeded after feedback storage was removed")
+	}
+}
+
 func TestAIRepositoryEvaluationImportIsAtomicAndStrict(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, Config{Path: "file::memory:?cache=shared"})

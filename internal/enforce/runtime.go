@@ -400,6 +400,15 @@ func (r *Runtime) persistDrop(ctx context.Context, event domain.NormalizedEvent,
 	if err != nil {
 		return false
 	}
+	// The normalized classifier input retains the upstream source external
+	// identity, but the durable route/replay identity must use the same Domain
+	// Source UUID that the production bridge resolved for policy lookup. Keep
+	// the public template input untouched while aligning the snapshot envelope
+	// with RouteDecision.SourceID so the final atomic DROP validation cannot
+	// reject an otherwise valid durable route.
+	if strings.TrimSpace(route.SourceID) != "" {
+		snap.SourceID = strings.TrimSpace(route.SourceID)
+	}
 	raw, err := snap.Marshal()
 	if err != nil {
 		return false
