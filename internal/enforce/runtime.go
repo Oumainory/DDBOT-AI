@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Oumainory/DDBOT-AI/internal/classifier"
+	"github.com/Oumainory/DDBOT-AI/internal/decision"
 	"github.com/Oumainory/DDBOT-AI/internal/domain"
 	"github.com/Oumainory/DDBOT-AI/internal/platformdb"
 	"github.com/Oumainory/DDBOT-AI/internal/policy"
@@ -76,6 +77,13 @@ type Config struct {
 	CacheMedia            func(context.Context, replay.Snapshot) error
 	MediaCacheConcurrency int
 	MediaCacheTimeout     time.Duration
+
+	// DecisionStrategy is the Phase 6+ pluggable semantic decision pipeline.
+	// When set, the runtime obtains semantic assessments through the strategy
+	// instead of calling Provider.Classify directly. When nil, the runtime
+	// falls back to the Phase 4/5 direct Provider path for full backward
+	// compatibility.
+	DecisionStrategy decision.DecisionStrategy
 }
 
 type flightResult struct {
@@ -91,6 +99,7 @@ type Runtime struct {
 	ai           *platformdb.AIRepository
 	repo         *platformdb.Phase5Repository
 	provider     provider.Provider
+	strategy     decision.DecisionStrategy
 	now          func() time.Time
 	timeout      time.Duration
 	gate         chan struct{}
@@ -125,7 +134,7 @@ func New(config Config) *Runtime {
 	if config.MediaCacheTimeout <= 0 {
 		config.MediaCacheTimeout = 10 * time.Second
 	}
-	return &Runtime{ai: config.AIRepository, repo: config.Repository, provider: config.Provider, now: config.Now, timeout: config.Timeout, gate: make(chan struct{}, config.MaxConcurrency), queueCap: config.QueueCapacity, readinessFn: config.Readiness, recoveryErr: config.DecisionRecoveryError != nil, cacheMedia: config.CacheMedia, mediaGate: make(chan struct{}, config.MediaCacheConcurrency), mediaTimeout: config.MediaCacheTimeout, flights: make(map[string]*flight)}
+	return &Runtime{ai: config.AIRepository, repo: config.Repository, provider: config.Provider, strategy: config.DecisionStrategy, now: config.Now, timeout: config.Timeout, gate: make(chan struct{}, config.MaxConcurrency), queueCap: config.QueueCapacity, readinessFn: config.Readiness, recoveryErr: config.DecisionRecoveryError != nil, cacheMedia: config.CacheMedia, mediaGate: make(chan struct{}, config.MediaCacheConcurrency), mediaTimeout: config.MediaCacheTimeout, flights: make(map[string]*flight)}
 }
 
 func (r *Runtime) SetEmergencyDisabled(disabled bool) {
@@ -512,6 +521,14 @@ func first(values ...string) string {
 }
 
 func (r *Runtime) classify(ctx context.Context, event domain.NormalizedEvent, release classifier.Release) (classifier.Decision, error) {
+	// Phase 6+: when a DecisionStrategy is configured, obtain the semantic
+	// assessment through the pluggable provider pipeline instead of calling
+	// the legacy Provider.Classify directly. This is the bridge between the
+	// Phase 4/5 architecture and the Phase 6+ Decision Provider model.
+	if r.strategy != nil {
+		return r.classifyViaStrategy(ctx, event, release)
+	}
+
 	if r.ai == nil || release.ID == "" || r.provider == nil {
 		return classifier.Decision{Status: classifier.StatusProviderUnavailable}, nil
 	}
@@ -613,4 +630,77 @@ func (r *Runtime) classifyProvider(ctx context.Context, event domain.NormalizedE
 		}
 	}()
 	return r.provider.Classify(ctx, event)
+}
+
+// classifyViaStrategy is the Phase 6+ path that obtains a semantic assessment
+// through the pluggable DecisionStrategy pipeline instead of calling
+// Provider.Classify directly. It maps the StrategyResult's SemanticDecision
+// into a classifier.Decision and persists it through the same durable claim
+// mechanism used by the legacy path.
+func (r *Runtime) classifyViaStrategy(ctx context.Context, event domain.NormalizedEvent, release classifier.Release) (classifier.Decision, error) {
+	if r.ai == nil || release.ID == "" {
+		return classifier.Decision{Status: classifier.StatusProviderUnavailable}, nil
+	}
+	if err := r.ai.PutNormalizedEvent(ctx, event); err != nil {
+		return classifier.Decision{}, err
+	}
+
+	// Use the same durable claim mechanism as the legacy path so that
+	// at-most-once semantics are preserved across both code paths.
+	decision, claimed, err := r.ai.EnsureDecisionClaim(ctx, event.ID, release.ID, "enforce", event.ObservedAt)
+	if err != nil {
+		return classifier.Decision{}, err
+	}
+	if !claimed {
+		return decision, nil
+	}
+
+	if err := r.ai.MarkDecisionCallStarted(ctx, decision.ID, r.now()); err != nil {
+		return classifier.Decision{}, err
+	}
+
+	// Run the Decision Strategy to obtain a semantic assessment.
+	started := r.now()
+	strategyResult, strategyErr := r.strategy.Evaluate(ctx, event)
+	latency := r.now().Sub(started).Milliseconds()
+
+	if strategyErr != nil || strategyResult.Escalated {
+		// Strategy could not produce a confident decision. Record as
+		// uncertain and fail-open to PASS.
+		status := classifier.StatusProviderError
+		errCode := "strategy_error"
+		if strategyResult.Escalated {
+			status = classifier.StatusUncertainCall
+			errCode = "strategy_escalated"
+		}
+		_ = r.ai.FinishDecision(ctx, decision.ID, status, classifier.Classification{
+			SchemaVersion: 1,
+			Category:      domain.CategoryUnknown,
+			Importance:    domain.ImportanceLow,
+			Confidence:    0,
+			Uncertain:     true,
+		}, "pass", errCode, "decision_strategy", release.Model, errCode, classifier.Usage{}, nil, release.PricingCurrency, &latency, r.now())
+		return r.ai.Decision(ctx, decision.ID)
+	}
+
+	// Map the SemanticDecision to a classifier.Classification for
+	// compatibility with the existing policy.Evaluate and persistDrop
+	// machinery.
+	sd := strategyResult.SemanticDecision
+	classification := classifier.Classification{
+		SchemaVersion: sd.SchemaVersion,
+		Category:      sd.Category,
+		Importance:    sd.Importance,
+		Tags:          sd.Tags,
+		Flags:         sd.Flags,
+		Confidence:    sd.Confidence,
+		Uncertain:     sd.Uncertain,
+		Summary:       sd.Summary,
+		Reason:        sd.Reason,
+		ReasonCode:    sd.ReasonCode,
+	}
+
+	suggested := string(policy.ClassificationSuggestedAction(classification))
+	_ = r.ai.FinishDecision(ctx, decision.ID, classifier.StatusCompleted, classification, suggested, "", "decision_strategy", release.Model, "", classifier.Usage{}, nil, release.PricingCurrency, &latency, r.now())
+	return r.ai.Decision(ctx, decision.ID)
 }
