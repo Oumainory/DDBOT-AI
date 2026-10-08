@@ -395,3 +395,168 @@ func (f *fakeDecisionProvider) Classify(ctx context.Context, event domain.Normal
 func (f *fakeDecisionProvider) TestConnection(ctx context.Context) (provider.TestResult, error) {
 	return f.testResult, f.testErr
 }
+
+// fakeProvider is a minimal DecisionProvider for strategy tests.
+type fakeProvider struct {
+	id       string
+	ptype    ProviderType
+	result   domain.SemanticResult
+	uncertain bool
+	err      error
+}
+
+func (p *fakeProvider) Evaluate(_ context.Context, _ domain.NormalizedEvent) (DecisionEvidence, error) {
+	return DecisionEvidence{
+		ProviderType:        p.ptype,
+		ProviderID:          p.id,
+		SemanticResult:      p.result,
+		ProviderConfidence:  p.result.Confidence,
+		Uncertain:           p.uncertain,
+		InsufficientContext: p.uncertain,
+		Error:               p.err,
+	}, p.err
+}
+
+func (p *fakeProvider) Type() ProviderType { return p.ptype }
+func (p *fakeProvider) ID() string         { return p.id }
+func (p *fakeProvider) HealthCheck(_ context.Context) error { return nil }
+
+func TestMajorityStrategyClearWinner(t *testing.T) {
+	p1 := &fakeProvider{id: "p1", ptype: ProviderRules, result: domain.SemanticResult{SchemaVersion: 1, Category: domain.CategoryMaintenance, Importance: domain.ImportanceHigh, Confidence: 0.9}}
+	p2 := &fakeProvider{id: "p2", ptype: ProviderLLM, result: domain.SemanticResult{SchemaVersion: 1, Category: domain.CategoryMaintenance, Importance: domain.ImportanceHigh, Confidence: 0.85}}
+	p3 := &fakeProvider{id: "p3", ptype: ProviderLLM, result: domain.SemanticResult{SchemaVersion: 1, Category: domain.CategoryUpdate, Importance: domain.ImportanceMedium, Confidence: 0.7}}
+
+	strategy := NewMajorityStrategy(p1, p2, p3)
+	result, err := strategy.Evaluate(context.Background(), testEvent())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Escalated {
+		t.Fatal("majority should not escalate with clear winner")
+	}
+	if result.SemanticDecision.Category != domain.CategoryMaintenance {
+		t.Fatalf("expected CategoryMaintenance, got %s", result.SemanticDecision.Category)
+	}
+	if result.SemanticDecision.Importance != domain.ImportanceHigh {
+		t.Fatalf("expected ImportanceHigh, got %s", result.SemanticDecision.Importance)
+	}
+	if result.ProviderCount != 3 {
+		t.Fatalf("expected 3 confident providers, got %d", result.ProviderCount)
+	}
+}
+
+func TestMajorityStrategyTieEscalates(t *testing.T) {
+	p1 := &fakeProvider{id: "p1", ptype: ProviderRules, result: domain.SemanticResult{SchemaVersion: 1, Category: domain.CategoryMaintenance, Importance: domain.ImportanceHigh, Confidence: 0.9}}
+	p2 := &fakeProvider{id: "p2", ptype: ProviderLLM, result: domain.SemanticResult{SchemaVersion: 1, Category: domain.CategoryUpdate, Importance: domain.ImportanceMedium, Confidence: 0.85}}
+
+	strategy := NewMajorityStrategy(p1, p2)
+	result, err := strategy.Evaluate(context.Background(), testEvent())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Escalated {
+		t.Fatal("tie should escalate")
+	}
+}
+
+func TestMajorityStrategyWithUncertainProviders(t *testing.T) {
+	p1 := &fakeProvider{id: "p1", ptype: ProviderRules, result: domain.SemanticResult{SchemaVersion: 1, Category: domain.CategoryMaintenance, Importance: domain.ImportanceHigh, Confidence: 0.9}}
+	p2 := &fakeProvider{id: "p2", ptype: ProviderLLM, uncertain: true}
+	p3 := &fakeProvider{id: "p3", ptype: ProviderLLM, uncertain: true}
+
+	strategy := NewMajorityStrategy(p1, p2, p3)
+	result, err := strategy.Evaluate(context.Background(), testEvent())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Escalated {
+		t.Fatal("should not escalate when one confident provider exceeds threshold")
+	}
+	if result.ProviderCount != 1 {
+		t.Fatalf("expected 1 confident provider, got %d", result.ProviderCount)
+	}
+}
+
+func TestMajorityStrategyAllUncertainEscalates(t *testing.T) {
+	p1 := &fakeProvider{id: "p1", ptype: ProviderRules, uncertain: true}
+	p2 := &fakeProvider{id: "p2", ptype: ProviderLLM, uncertain: true}
+
+	strategy := NewMajorityStrategy(p1, p2)
+	result, err := strategy.Evaluate(context.Background(), testEvent())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Escalated {
+		t.Fatal("all uncertain should escalate")
+	}
+}
+
+func TestMajorityStrategyMode(t *testing.T) {
+	strategy := NewMajorityStrategy()
+	if strategy.Mode() != StrategyMajority {
+		t.Fatalf("expected StrategyMajority, got %s", strategy.Mode())
+	}
+}
+
+func TestWeightedStrategyHigherWeightWins(t *testing.T) {
+	p1 := &fakeProvider{id: "p1", ptype: ProviderRules, result: domain.SemanticResult{SchemaVersion: 1, Category: domain.CategoryMaintenance, Importance: domain.ImportanceHigh, Confidence: 0.9}}
+	p2 := &fakeProvider{id: "p2", ptype: ProviderLLM, result: domain.SemanticResult{SchemaVersion: 1, Category: domain.CategoryUpdate, Importance: domain.ImportanceMedium, Confidence: 0.85}}
+
+	weights := map[string]float64{"p1": 3.0, "p2": 1.0}
+	strategy := NewWeightedStrategy([]DecisionProvider{p1, p2}, weights)
+	result, err := strategy.Evaluate(context.Background(), testEvent())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Escalated {
+		t.Fatal("weighted should not escalate")
+	}
+	if result.SemanticDecision.Category != domain.CategoryMaintenance {
+		t.Fatalf("expected CategoryMaintenance (higher weight), got %s", result.SemanticDecision.Category)
+	}
+}
+
+func TestWeightedStrategyDefaultWeight(t *testing.T) {
+	p1 := &fakeProvider{id: "p1", ptype: ProviderRules, result: domain.SemanticResult{SchemaVersion: 1, Category: domain.CategoryMaintenance, Importance: domain.ImportanceHigh, Confidence: 0.9}}
+	p2 := &fakeProvider{id: "p2", ptype: ProviderLLM, result: domain.SemanticResult{SchemaVersion: 1, Category: domain.CategoryUpdate, Importance: domain.ImportanceMedium, Confidence: 0.85}}
+
+	strategy := NewWeightedStrategy([]DecisionProvider{p1, p2}, nil)
+	result, err := strategy.Evaluate(context.Background(), testEvent())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Escalated {
+		t.Fatal("equal weights should not escalate with 2 providers")
+	}
+}
+
+func TestWeightedStrategyInsufficientWeightEscalates(t *testing.T) {
+	p1 := &fakeProvider{id: "p1", ptype: ProviderRules, result: domain.SemanticResult{SchemaVersion: 1, Category: domain.CategoryMaintenance, Importance: domain.ImportanceHigh, Confidence: 0.9}}
+	p2 := &fakeProvider{id: "p2", ptype: ProviderLLM, uncertain: true}
+	p3 := &fakeProvider{id: "p3", ptype: ProviderLLM, uncertain: true}
+
+	weights := map[string]float64{"p1": 1.0, "p2": 5.0, "p3": 5.0}
+	strategy := NewWeightedStrategy([]DecisionProvider{p1, p2, p3}, weights)
+	result, err := strategy.Evaluate(context.Background(), testEvent())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Escalated {
+		t.Fatal("should escalate when confident weight < 50%")
+	}
+}
+
+func TestWeightedStrategyMode(t *testing.T) {
+	strategy := NewWeightedStrategy(nil, nil)
+	if strategy.Mode() != StrategyWeighted {
+		t.Fatalf("expected StrategyWeighted, got %s", strategy.Mode())
+	}
+}
+
+func TestWeightedStrategyEmptyProviders(t *testing.T) {
+	strategy := NewWeightedStrategy(nil, nil)
+	_, err := strategy.Evaluate(context.Background(), testEvent())
+	if !errors.Is(err, ErrNoProvider) {
+		t.Fatalf("expected ErrNoProvider, got %v", err)
+	}
+}
