@@ -19,6 +19,7 @@ import (
 	"github.com/Oumainory/DDBOT-AI/internal/adminapi"
 	"github.com/Oumainory/DDBOT-AI/internal/auth"
 	"github.com/Oumainory/DDBOT-AI/internal/buildinfo"
+	"github.com/Oumainory/DDBOT-AI/internal/decision"
 	"github.com/Oumainory/DDBOT-AI/internal/domain"
 	"github.com/Oumainory/DDBOT-AI/internal/enforce"
 	"github.com/Oumainory/DDBOT-AI/internal/evaluation"
@@ -517,10 +518,22 @@ func newPlatformHTTP(platform PlatformConfig, online *atomic.Bool) (platformHTTP
 		// Phase 5 authoritative routing is wired as a pre-Messenger hook below.
 		// It remains fail-open whenever the durable repository, provider, release,
 		// readiness evidence, or target identity is unavailable.
+		//
+		// Phase 6+: when no AI provider is configured, automatically use the
+		// NoneProvider + FirstAvailableStrategy as the default decision pipeline.
+		// This is a first-class product state, not a degraded mode. The system
+		// runs fully and correctly without any AI service.
+		var decisionStrategy decision.DecisionStrategy
+		if aiProvider.Get() == nil {
+			decisionStrategy = decision.NewFirstAvailableStrategy(
+				decision.NewNoneProvider("production-default"),
+			)
+		}
 		enforceRuntime = enforce.New(enforce.Config{
 			AIRepository:          aiRepository,
 			Repository:            phase5Repository,
 			Provider:              aiProvider,
+			DecisionStrategy:      decisionStrategy,
 			DecisionRecoveryError: decisionRecoveryErr,
 			QueueCapacity:         64,
 			MaxConcurrency:        2,
